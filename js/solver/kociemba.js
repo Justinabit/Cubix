@@ -433,6 +433,10 @@ export function simplify(moves) {
   return out;
 }
 
-export { getTwist, getFlip, getSlice, getCPerm, getEPerm, getMPerm, getPerm, setPerm, setSlice, setCPerm, setEPerm, setMPerm, PHASE2_MOVES as G1_MOVES };
+export {
+  getTwist, getFlip, getSlice, getCPerm, getEPerm, getMPerm,
+  setTwist, setFlip, setSlice, setCPerm, setEPerm, setMPerm, setPerm, getPerm,
+  PHASE2_MOVES as G1_MOVES,
+};
 export const invert = invertMoves;
 export const tokenize = tokenizeMoves;

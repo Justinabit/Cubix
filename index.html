@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Cubix — scan your Rubik's Cube with the camera or enter the colours by hand, then follow animated 3D instructions to solve it. Everything runs in your browser.">
+<meta name="color-scheme" content="dark light">
+<title>Cubix — 3D Rubik's Cube solver</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111'/><g fill='none' stroke='%23eee' stroke-width='2'><rect x='7' y='7' width='18' height='18' rx='3'/><path d='M7 13h18M7 19h18M13 7v18M19 7v18'/></g></svg>">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <rect x="4" y="4" width="24" height="24" rx="5" class="brand-cube"></rect>
+      <path d="M4 12.7h24M4 19.3h24M12.7 4v24M19.3 4v24" class="brand-lines"></path>
+    </svg>
+    <span class="brand-name">Cubix</span>
+  </div>
+  <nav class="topbar-actions" aria-label="Site">
+    <button type="button" id="btn-help" class="icon-button" aria-label="Notation cheat sheet">
+      <span aria-hidden="true">?</span>
+    </button>
+    <button type="button" id="btn-theme" class="icon-button" aria-label="Switch to light theme">
+      <span id="theme-glyph" aria-hidden="true">◐</span>
+    </button>
+  </nav>
+</header>
+
+<main id="main">
+
+  <!-- ══════════════════════ 1. LANDING ══════════════════════ -->
+  <section class="screen screen-landing is-active" id="screen-landing" aria-labelledby="landing-title">
+    <div class="landing-copy">
+      <p class="eyebrow">Runs entirely in your browser</p>
+      <h1 id="landing-title">Solve your cube,<br>one turn at a time.</h1>
+      <p class="lede">
+        Show Cubix your scrambled cube — or tap the colours in — and it will check
+        it is possible, then teach you how to solve it with animated 3D instructions.
+      </p>
+      <div class="landing-actions">
+        <button type="button" class="button button-primary" data-goto="scan">
+          <span class="button-icon" aria-hidden="true">◎</span>
+          Scan my cube
+        </button>
+        <button type="button" class="button" data-goto="manual">
+          <span class="button-icon" aria-hidden="true">▦</span>
+          Enter colours manually
+        </button>
+      </div>
+      <p class="fineprint">
+        Nothing you scan leaves your device. The camera feed is processed locally and never uploaded.
+      </p>
+    </div>
+    <div class="landing-cube">
+      <div class="cube-stage" id="landing-stage"><canvas id="landing-canvas"></canvas></div>
+      <p class="stage-hint">Drag to spin · scroll to zoom</p>
+    </div>
+  </section>
+
+  <!-- ══════════════════════ 2a. SCAN ══════════════════════ -->
+  <section class="screen" id="screen-scan" aria-labelledby="scan-title" hidden>
+    <div class="screen-head">
+      <button type="button" class="button button-ghost button-back" data-goto="landing">← Back</button>
+      <h2 id="scan-title">Scan your cube</h2>
+      <p class="screen-sub">We scan one face at a time. First, show us the six centres so we know your exact colours and lighting.</p>
+    </div>
+
+    <div class="scan-layout">
+      <div class="scan-stage">
+        <div class="video-wrap" id="video-wrap">
+          <video id="camera" playsinline muted autoplay></video>
+          <div class="grid-overlay" id="grid-overlay" aria-hidden="true"></div>
+          <div class="scan-badge" id="scan-badge">Camera off</div>
+        </div>
+        <div class="scan-controls">
+          <button type="button" class="button button-primary" id="btn-capture">Capture</button>
+          <button type="button" class="button" id="btn-switch-camera">Flip camera</button>
+          <button type="button" class="button button-ghost" id="btn-restart-calibration">Redo centres</button>
+        </div>
+        <p class="hint" id="scan-hint">Press “Start camera” to begin.</p>
+      </div>
+
+      <aside class="scan-side">
+        <h3 class="side-title" id="scan-step-title">Step 1 of 7 · Centres</h3>
+        <p class="side-instruction" id="scan-instruction">Centre the cube in the grid, then capture.</p>
+
+        <div class="mini-guide">
+          <div class="cube-stage cube-stage-mini" id="scan-stage"><canvas id="scan-canvas"></canvas></div>
+          <p class="mini-caption" id="mini-caption">Show the white centre</p>
+        </div>
+
+        <ol class="face-progress" id="face-progress" aria-label="Faces scanned"></ol>
+      </aside>
+    </div>
+
+    <div class="scan-footer">
+      <button type="button" class="button button-ghost" id="btn-to-manual">Switch to manual entry</button>
+    </div>
+  </section>
+
+  <!-- ══════════════════════ 2b. MANUAL ══════════════════════ -->
+  <section class="screen" id="screen-manual" aria-labelledby="manual-title" hidden>
+    <div class="screen-head">
+      <button type="button" class="button button-ghost button-back" data-goto="landing">← Back</button>
+      <h2 id="manual-title">Enter the colours</h2>
+      <p class="screen-sub">Pick a colour, then tap stickers. The centre stickers are fixed and define each face.</p>
+    </div>
+
+    <div class="manual-layout">
+      <div class="manual-stage">
+        <div class="cube-stage" id="manual-stage"><canvas id="manual-canvas"></canvas></div>
+        <div class="stage-tools">
+          <button type="button" class="button button-ghost" id="btn-reset-view">Reset view</button>
+          <label class="toggle">
+            <input type="checkbox" id="chk-letters">
+            <span>Show letters on stickers</span>
+          </label>
+        </div>
+        <p class="hint">Tip: you can also click a face on the 3D cube to paint the whole face.</p>
+      </div>
+
+      <div class="manual-editor">
+        <div class="palette" role="radiogroup" aria-label="Sticker colour" id="palette"></div>
+
+        <div class="net" id="net" role="application" aria-label="Cube net. Use the colour swatches above, then tap a sticker to paint it."></div>
+
+        <div class="counts" id="counts" aria-live="polite"></div>
+
+        <div class="editor-tools">
+          <button type="button" class="button" id="btn-undo">Undo</button>
+          <button type="button" class="button" id="btn-redo">Redo</button>
+          <button type="button" class="button" id="btn-fill-face">Fill face</button>
+          <button type="button" class="button" id="btn-random">Random scramble</button>
+          <button type="button" class="button button-ghost" id="btn-clear">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="screen-footer">
+      <button type="button" class="button button-primary" id="btn-review">Review cube →</button>
+    </div>
+  </section>
+
+  <!-- ══════════════════════ 3. REVIEW ══════════════════════ -->
+  <section class="screen" id="screen-review" aria-labelledby="review-title" hidden>
+    <div class="screen-head">
+      <button type="button" class="button button-ghost button-back" id="btn-review-back">← Back</button>
+      <h2 id="review-title">Check the cube</h2>
+      <p class="screen-sub">This is the cube Cubix will solve. Spin it around and make sure it matches what you are holding.</p>
+    </div>
+
+    <div class="review-layout">
+      <div class="cube-stage cube-stage-large" id="review-stage"><canvas id="review-canvas"></canvas></div>
+      <div class="review-panel">
+        <div class="status" id="validate-status" role="status" aria-live="polite"></div>
+        <ul class="issues" id="validate-issues"></ul>
+        <div class="review-actions">
+          <button type="button" class="button" id="btn-edit-colours">Edit colours</button>
+          <button type="button" class="button button-primary" id="btn-solve">Solve it →</button>
+        </div>
+        <p class="hint" id="solve-hint"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════ 4. SOLVE ══════════════════════ -->
+  <section class="screen" id="screen-solve" aria-labelledby="solve-title" hidden>
+    <div class="screen-head">
+      <button type="button" class="button button-ghost button-back" id="btn-solve-back">← Back</button>
+      <h2 id="solve-title">Your solution</h2>
+      <p class="screen-sub" id="solve-subtitle"></p>
+    </div>
+
+    <div class="solve-layout">
+      <div class="solve-stage">
+        <div class="cube-stage cube-stage-large" id="solve-stage"><canvas id="solve-canvas"></canvas></div>
+        <div class="move-readout">
+          <div class="move-now" id="move-now" aria-live="polite">
+            <span class="move-glyph" id="move-glyph">—</span>
+            <span class="move-text" id="move-text">Press play to begin</span>
+          </div>
+          <div class="progress">
+            <input type="range" id="scrub" min="0" max="0" value="0" step="1" aria-label="Move position">
+            <div class="progress-meta">
+              <span id="progress-label">Move 0 of 0</span>
+              <span id="stage-label"></span>
+            </div>
+          </div>
+          <div class="playback">
+            <button type="button" class="button" id="btn-prev" aria-label="Previous move">◀◀</button>
+            <button type="button" class="button button-primary" id="btn-play" aria-label="Play">▶ Play</button>
+            <button type="button" class="button" id="btn-next" aria-label="Next move">▶▶</button>
+            <button type="button" class="button" id="btn-restart" aria-label="Restart">↺</button>
+            <label class="speed">
+              <span>Speed</span>
+              <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1" aria-label="Playback speed">
+              <span id="speed-label">1×</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="chk-practice">
+              <span>Practice mode</span>
+            </label>
+          </div>
+          <p class="hint" id="practice-hint" hidden>Practice mode: do the move on your real cube, then press Next.</p>
+        </div>
+      </div>
+
+      <aside class="steps-panel">
+        <div class="steps-head">
+          <h3>Moves</h3>
+          <div class="method-switch" role="radiogroup" aria-label="Solving method">
+            <button type="button" class="chip is-active" data-method="kociemba" role="radio" aria-checked="true">Shortest</button>
+            <button type="button" class="chip" data-method="beginner" role="radio" aria-checked="false">Beginner</button>
+          </div>
+        </div>
+        <div class="steps" id="steps" role="list"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ══════════════════════ 5. DONE ══════════════════════ -->
+  <section class="screen screen-done" id="screen-done" aria-labelledby="done-title" hidden>
+    <div class="done-inner">
+      <div class="cube-stage cube-stage-medium" id="done-stage"><canvas id="done-canvas"></canvas></div>
+      <h2 id="done-title">Solved.</h2>
+      <p class="done-count"><strong id="done-moves">0</strong> moves</p>
+      <p class="done-note" id="done-note"></p>
+      <div class="done-actions">
+        <button type="button" class="button button-primary" data-goto="manual">Solve another cube</button>
+        <button type="button" class="button" id="btn-done-replay">Watch it again</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ══════════════════════ DIALOGS ══════════════════════ -->
+<div class="sheet" id="sheet-help" hidden>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="sheet-head">
+      <h2 id="help-title">Notation cheat sheet</h2>
+      <button type="button" class="icon-button" data-close-sheet aria-label="Close">×</button>
+    </div>
+    <div class="sheet-body" id="help-body"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+<noscript>
+  <p class="noscript">Cubix needs JavaScript to render the 3D cube and run the solver.</p>
+</noscript>
+</body>
+</html>
