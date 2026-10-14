@@ -1,0 +1,13 @@
+{
+  "name": "cubix",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Cubix — an interactive 3D Rubik's Cube solver that runs entirely in the browser.",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "dev": "node tools/serve.mjs",
+    "test": "node tests/run.mjs"
+  },
+  "license": "MIT"
+}
