@@ -227,3 +227,161 @@ export function assessLighting(rgb) {
     advice,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Whole-cube classification from the six centres
+ * ------------------------------------------------------------------ */
+
+/**
+ * Distance between two Lab colours with lightness down-weighted. Faces are
+ * scanned one after another and rarely get identical light, so a sticker can
+ * be brighter or darker than its own centre; hue and chroma (a, b) are what
+ * actually tell the six cube colours apart.
+ */
+/**
+ * Lab of a sample after removing exposure: the colour is scaled so its
+ * brightest channel is full. The camera re-exposes for every face, which
+ * scales all three channels together; this undoes that, so a sticker is
+ * compared with a centre by what colour it is, not how brightly it was lit.
+ * No two cube colours differ only in brightness, so nothing is lost.
+ */
+export function stickerLab({ r, g, b }) {
+  const max = Math.max(r, g, b, 1);
+  const k = 255 / max;
+  return rgbToLab({ r: r * k, g: g * k, b: b * k });
+}
+
+export function stickerDistance(p, q) {
+  return Math.hypot((p.L - q.L) * 0.55, p.a - q.a, p.b - q.b);
+}
+
+/**
+ * Minimum-cost assignment (Hungarian algorithm, O(n³)).
+ * @param {number[][]} cost square matrix
+ * @returns {number[]} column assigned to each row
+ */
+export function assignMinCost(cost) {
+  const n = cost.length;
+  const INF = Infinity;
+  const u = new Array(n + 1).fill(0), v = new Array(n + 1).fill(0);
+  const p = new Array(n + 1).fill(0), way = new Array(n + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    p[0] = i;
+    let j0 = 0;
+    const minv = new Array(n + 1).fill(INF);
+    const used = new Array(n + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = p[j0];
+      let delta = INF, j1 = 0;
+      for (let j = 1; j <= n; j++) {
+        if (used[j]) continue;
+        const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+      }
+      for (let j = 0; j <= n; j++) {
+        if (used[j]) { u[p[j]] += delta; v[j] -= delta; } else minv[j] -= delta;
+      }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0);
+  }
+  const rowToCol = new Array(n);
+  for (let j = 1; j <= n; j++) if (p[j]) rowToCol[p[j] - 1] = j - 1;
+  return rowToCol;
+}
+
+const FACE_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'];
+
+/**
+ * Turn six scanned faces into a 54-character facelet string.
+ *
+ * Each face's centre sticker IS the reference for that face's colour, measured
+ * on the user's own cube in the user's own light — no fixed colour table.
+ * Every other sticker is then matched to a centre, under the one rule every
+ * real cube obeys: each colour appears exactly nine times. Solving that as an
+ * assignment problem (rather than nearest-centre one sticker at a time) is
+ * what settles the classic near-misses such as red vs orange or white vs
+ * yellow: if one orange sticker looks a little red, the red count would go to
+ * ten, so the assignment gives the most orange-looking "red" back to orange.
+ *
+ * @param {Object<string, Array<{r:number,g:number,b:number}>>} faces
+ *   nine row-major samples per face letter (U, R, F, D, L, B)
+ * @returns {{facelets:string, uncertain:number[], similarCentres:string[][]}}
+ */
+export function classifyCube(faces) {
+  const centres = {};
+  for (const f of FACE_ORDER) centres[f] = stickerLab(faces[f][4]);
+
+  // Stickers (other than centres) as rows; 8 slots per colour as columns.
+  const rows = [];
+  for (const f of FACE_ORDER) {
+    for (let i = 0; i < 9; i++) {
+      if (i === 4) continue;
+      rows.push({ index: FACE_ORDER.indexOf(f) * 9 + i, lab: stickerLab(faces[f][i]) });
+    }
+  }
+  const cost = rows.map((row) => {
+    const line = [];
+    for (const f of FACE_ORDER) {
+      const d = stickerDistance(row.lab, centres[f]);
+      for (let k = 0; k < 8; k++) line.push(d);
+    }
+    return line;
+  });
+  const assigned = assignMinCost(cost);
+
+  const out = new Array(54);
+  for (const f of FACE_ORDER) out[FACE_ORDER.indexOf(f) * 9 + 4] = f;
+  const uncertain = [];
+  rows.forEach((row, r) => {
+    const letter = FACE_ORDER[Math.floor(assigned[r] / 8)];
+    out[row.index] = letter;
+    // Flag a sticker when another centre is almost as close as the one it
+    // was given, or when it had to be pushed away from its nearest centre.
+    const dists = FACE_ORDER.map((f) => stickerDistance(row.lab, centres[f]));
+    const mine = dists[FACE_ORDER.indexOf(letter)];
+    const others = dists.filter((_, k) => FACE_ORDER[k] !== letter);
+    if (Math.min(...others) < mine * 1.25) uncertain.push(row.index);
+  });
+
+  // Two centres that look alike usually mean the same face was shown twice.
+  const similarCentres = [];
+  for (let a = 0; a < 6; a++) {
+    for (let b = a + 1; b < 6; b++) {
+      if (stickerDistance(centres[FACE_ORDER[a]], centres[FACE_ORDER[b]]) < 12) {
+        similarCentres.push([FACE_ORDER[a], FACE_ORDER[b]]);
+      }
+    }
+  }
+  return { facelets: out.join(''), uncertain, similarCentres };
+}
+
+/**
+ * Live, one-face preview used while the camera is pointed at the cube: each
+ * sticker gets the nearest of the centres measured so far, falling back to
+ * the stock reference colours for centres not seen yet.
+ * @param {Array<{r,g,b}>} nine
+ * @param {Object<string,{r,g,b}>} knownCentres letter -> centre sample
+ */
+export function previewFace(nine, knownCentres) {
+  const refs = REFERENCE_COLORS.map((ref) => {
+    const sample = knownCentres[ref.letter];
+    return { letter: ref.letter, lab: stickerLab(sample || hexToRgb(ref.hex)) };
+  });
+  return nine.map((rgb) => {
+    if (!rgb) return null;
+    const lab = stickerLab(rgb);
+    let best = null, bestD = Infinity;
+    for (const ref of refs) {
+      const d = stickerDistance(lab, ref.lab);
+      if (d < bestD) { bestD = d; best = ref.letter; }
+    }
+    return best;
+  });
+}
+
+function hexToRgb(hex) {
+  return { r: parseInt(hex.slice(1, 3), 16), g: parseInt(hex.slice(3, 5), 16), b: parseInt(hex.slice(5, 7), 16) };
+}

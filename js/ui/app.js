@@ -14,7 +14,10 @@ import { validate, summary } from '../core/validator.js';
 import { Cube3D } from '../three/cube3d.js';
 import { NetEditor, FACE_LABELS } from './net.js';
 import { Player, describeMove } from './player.js';
-import { Scanner, SCAN_ORDER, SCAN_INSTRUCTIONS, CALIBRATION_INSTRUCTIONS } from '../scan/scanner.js';
+import {
+  Scanner, SCAN_ORDER, SCAN_UP, SCAN_INSTRUCTIONS, gridChange, looksLikeCube, lightingAdvice, repairToValid,
+} from '../scan/scanner.js';
+import { classifyCube, previewFace } from '../scan/classifier.js';
 import { getSolver, simplify as simplifyKociemba } from '../solver/kociemba.js';
 import { solveBeginner, STAGES as BEGINNER_STAGES } from '../solver/beginner.js';
 
@@ -42,6 +45,8 @@ export class App {
     this.scanner = new Scanner();
     this.solverReady = false;
     this._cameraToken = 0;      // bumped on every camera start, to drop stale ones
+    this.spin = true;
+    try { this.spin = localStorage.getItem('cubix-spin') !== '0'; } catch { /* storage blocked */ }
 
     this._cacheDom();
     this._buildScreens();
@@ -50,6 +55,7 @@ export class App {
     this._buildHelp();
     this._bindGlobal();
     this._syncThemeButton();
+    this._setSpin(this.spin);
 
     this.go('landing');
     this._loop();
@@ -61,6 +67,7 @@ export class App {
     this.el = {
       screens: Object.fromEntries(SCREENS.map((name) => [name, document.getElementById(`screen-${name}`)])),
       theme: document.getElementById('btn-theme'),
+      spin: document.getElementById('btn-spin'),
       themeGlyph: document.getElementById('theme-glyph'),
       help: document.getElementById('btn-help'),
       helpSheet: document.getElementById('sheet-help'),
@@ -99,6 +106,9 @@ export class App {
       miniCaption: document.getElementById('mini-caption'),
       faceProgress: document.getElementById('face-progress'),
       capture: document.getElementById('btn-capture'),
+      autoCapture: document.getElementById('chk-auto-capture'),
+      scanCells: document.getElementById('scan-cells'),
+      scanHoldBar: document.getElementById('scan-hold-bar'),
       switchCamera: document.getElementById('btn-switch-camera'),
       solvedCount: document.getElementById('done-moves'),
       doneNote: document.getElementById('done-note'),
@@ -127,6 +137,7 @@ export class App {
     const view = new Cube3D(canvas, { prefersReducedMotion: () => this.reducedMotion });
     view.setState(this.facelets);
     view.setShowLetters(this.el.letters.checked);
+    view.setAutoRotate(this._spinFor(name));
     if (name === 'landing') {
       // A gentle demo scramble on the hero cube, re-solved on a slow loop.
       this._animateHero(view);
@@ -152,14 +163,33 @@ export class App {
       }, wait);
     };
     setTimeout(run, 900);
-    view.setAutoRotate(true);
+  }
+
+  /**
+   * Whether a screen's cube does the slow idle spin. The user can switch it
+   * off everywhere; the solve and scan cubes never spin, because there the
+   * cube must stay facing the way the user is holding theirs.
+   */
+  _spinFor(name) {
+    return this.spin && name !== 'solve' && name !== 'scan';
+  }
+
+  _setSpin(on) {
+    this.spin = !!on;
+    try { localStorage.setItem('cubix-spin', this.spin ? '1' : '0'); } catch { /* ignore */ }
+    for (const [name, view] of Object.entries(this.views)) view.setAutoRotate(this._spinFor(name));
+    this.el.spin.setAttribute('aria-pressed', String(!this.spin));
+    this.el.spin.setAttribute('aria-label', this.spin ? 'Stop the cube spinning' : 'Let the cube spin');
+    this.el.spin.title = this.spin ? 'Stop the cube spinning' : 'Let the cube spin';
+    this.el.spin.classList.toggle('is-off', !this.spin);
   }
 
   _buildNet() {
     this.net = new NetEditor(this.el.net, this.el.palette, this.el.counts, {
       tabsContainer: this.el.faceTabs,
-      onChange: (state) => {
+      onChange: (state, cause) => {
         this.facelets = state;
+        if (cause !== 'scan') this.scanUncertain = [];
         this.solution = null;          // any edit makes an old solution stale
         for (const name of ['manual', 'review', 'scan']) {
           if (this.views[name]) this.views[name].setState(state);
@@ -217,6 +247,10 @@ export class App {
 
     this.el.help.addEventListener('click', () => this._openHelp());
     this.el.theme.addEventListener('click', () => this._toggleTheme());
+    this.el.spin.addEventListener('click', () => this._setSpin(!this.spin));
+    document.getElementById('btn-solve-view').addEventListener('click', () => {
+      if (this.views.solve) this.views.solve.resetView();
+    });
     document.addEventListener('keydown', (event) => this._onKey(event));
 
     // ---- manual screen ----
@@ -312,6 +346,7 @@ export class App {
         if (token !== this._cameraToken || this.current !== 'scan') { this._stopCamera(); return; }
         this._attachVideo(video);
         this._updateScanStep();
+        this._startScanLoop();
       } catch (err) {
         this.el.scanBadge.textContent = 'Camera unavailable';
         this._toast(err.message);
@@ -319,11 +354,26 @@ export class App {
         this.el.switchCamera.disabled = false;
       }
     });
-    document.getElementById('btn-restart-calibration').addEventListener('click', () => {
-      this.scanner.calibration = {};
-      this.scanner.classifier = null;
+    document.getElementById('btn-scan-restart').addEventListener('click', () => {
       this.scanned = {};
-      this._beginCalibration();
+      this._renderScanProgress();
+      this._nextScanFace();
+    });
+    this.el.autoCapture.addEventListener('change', () => {
+      this._resetHold();
+      try { localStorage.setItem('cubix-auto-capture', this.el.autoCapture.checked ? '1' : '0'); } catch { /* ignore */ }
+    });
+    try {
+      if (localStorage.getItem('cubix-auto-capture') === '0') this.el.autoCapture.checked = false;
+    } catch { /* storage blocked */ }
+    this.el.faceProgress.addEventListener('click', (event) => {
+      const item = event.target.closest('[data-face]');
+      if (!item || !this.scanner.ready) return;
+      // Tap a face to scan it again.
+      delete this.scanned[item.dataset.face];
+      this.scanFace = item.dataset.face;
+      this._renderScanProgress();
+      this._updateScanStep();
     });
     document.getElementById('btn-to-manual').addEventListener('click', () => {
       this._stopCamera();
@@ -392,8 +442,11 @@ export class App {
     this.validation = validate(this.facelets);
     const view = this.view('review');
     view.setState(this.facelets);
-    view.setHighlight(this.validation.suspectFacelets);
-    this.net.setSuspect(this.validation.suspectFacelets);
+    // Invalid cube: outline what the validator blames. Valid but freshly
+    // scanned: outline the stickers the scanner was least sure of.
+    const doubtful = this.validation.valid ? (this.scanUncertain || []) : this.validation.suspectFacelets;
+    view.setHighlight(doubtful);
+    this.net.setSuspect(doubtful);
 
     const status = this.el.validateStatus;
     status.classList.toggle('is-ok', this.validation.valid);
@@ -414,7 +467,8 @@ export class App {
       ? `Fill in the remaining ${this.validation.missing} sticker${this.validation.missing === 1 ? '' : 's'} on the previous screen.`
       : !this.validation.valid ? 'Fix the highlighted stickers to continue.'
         : solved ? 'Nothing to solve yet. Edit the colours to match your cube, or try a random scramble.'
-          : '';
+          : doubtful.length ? `The scanner was less sure about ${doubtful.length} outlined sticker${doubtful.length === 1 ? '' : 's'} — check ${doubtful.length === 1 ? 'it matches' : 'they match'} your cube.`
+            : '';
   }
 
   /* ---------------------------------- solve ---------------------------------- */
@@ -498,6 +552,7 @@ export class App {
 
   _loadSolution(solution) {
     this.finished = false;
+    if (this.views.solve) this.views.solve.resetView();
     // Only the short solution is simplified: merging moves in the beginner
     // method would shift the move indices out of line with its stages.
     const moves = solution.stages ? solution.moves : simplifyKociemba(solution.moves);
@@ -642,7 +697,6 @@ export class App {
       : 'This is the short solution. Switch to the Beginner method on the solution screen to learn it step by step.';
     const view = this.view('done');
     view.setState(SOLVED_FACELETS);
-    view.setAutoRotate(true);
     this.go('done');
   }
 
@@ -650,21 +704,15 @@ export class App {
 
   async _enterScan() {
     const token = ++this._cameraToken;
-    this.scanned = {};
-    this.mode = null;
+    this.scanned = {};                 // face letter -> nine raw RGB samples
+    this.scanFace = SCAN_ORDER[0];
     this.el.capture.disabled = true;
     this.el.scanBadge.textContent = 'Starting camera…';
     this.el.scanHint.textContent = 'Allow camera access if your browser asks.';
-    this.el.grid.classList.add('is-calibrating');
-    this.el.faceProgress.innerHTML = '';
-    for (const face of SCAN_ORDER) {
-      const li = document.createElement('li');
-      li.dataset.face = face;
-      li.textContent = FACE_LABELS[face];
-      this.el.faceProgress.appendChild(li);
-    }
-    this._beginCalibration();
-    if (this.views.scan) this.views.scan.setState(SOLVED_FACELETS);
+    this._buildScanCells();
+    this._renderScanProgress();
+    this._resetHold();
+    this._updateScanStep();
     try {
       const video = await this.scanner.start('environment');
       // The user may have left the scan screen while the permission prompt
@@ -672,7 +720,7 @@ export class App {
       if (token !== this._cameraToken || this.current !== 'scan') { this._stopCamera(); return; }
       this._attachVideo(video);
       this._updateScanStep();
-      this.el.scanHint.textContent = 'Fill the square with the sticker, in even light, then press Capture.';
+      this._startScanLoop();
     } catch (err) {
       if (token !== this._cameraToken) return;
       this.el.scanBadge.textContent = 'Camera unavailable';
@@ -688,122 +736,201 @@ export class App {
     this.el.video.srcObject = video.srcObject;
     this.el.video.play().catch(() => {});
     this.el.capture.disabled = false;
+    this.el.videoWrap.classList.toggle('is-mirrored', this.scanner.mirrored);
   }
 
-  _beginCalibration() {
-    this.mode = 'calibrate';
-    this.calibrationIndex = 0;
-    this.el.grid.classList.add('is-calibrating');
+  _buildScanCells() {
+    if (this.el.scanCells.children.length === 9) return;
+    this.el.scanCells.innerHTML = '';
+    for (let i = 0; i < 9; i++) this.el.scanCells.appendChild(document.createElement('span'));
+  }
+
+  _renderScanProgress() {
+    this.el.faceProgress.innerHTML = '';
+    for (const face of SCAN_ORDER) {
+      const li = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.face = face;
+      const done = !!this.scanned[face];
+      button.className = 'face-chip' + (done ? ' is-done' : '') + (face === this.scanFace ? ' is-current' : '');
+      button.setAttribute('aria-label', `${COLOR_OF_LETTER[face].name} face${done ? ', scanned — tap to scan again' : ''}`);
+      const dot = document.createElement('span');
+      dot.className = 'face-chip-dot';
+      dot.style.background = COLOR_OF_LETTER[face].hex;
+      const label = document.createElement('span');
+      label.textContent = COLOR_OF_LETTER[face].name;
+      button.append(dot, label);
+      li.appendChild(button);
+      this.el.faceProgress.appendChild(li);
+    }
+  }
+
+  _nextScanFace() {
+    this.scanFace = SCAN_ORDER.find((f) => !this.scanned[f]) || null;
+    this._renderScanProgress();
     this._updateScanStep();
   }
 
   _updateScanStep() {
-    const faces = this.mode === 'calibrate' ? SCAN_ORDER : SCAN_ORDER;
-    const face = faces[this.calibrationIndex];
+    const face = this.scanFace;
+    const count = Object.keys(this.scanned).length;
     if (!face) return;
-    const total = SCAN_ORDER.length + 1;
-    const stepNo = this.mode === 'calibrate' ? this.calibrationIndex + 1 : this.calibrationIndex + 2;
-    this.el.scanStep.textContent = `Step ${stepNo} of ${total} · ${this.mode === 'calibrate' ? 'Centres' : 'Faces'}`;
-    this.el.scanInstruction.textContent = this.mode === 'calibrate'
-      ? CALIBRATION_INSTRUCTIONS[face]
-      : SCAN_INSTRUCTIONS[face];
-    this.el.miniCaption.textContent = this.mode === 'calibrate'
-      ? CALIBRATION_INSTRUCTIONS[face]
-      : `Now showing: ${FACE_LABELS[face]} (${COLOR_OF_LETTER[face].name})`;
-    this.el.scanBadge.textContent = this.mode === 'calibrate'
-      ? `Centre ${this.calibrationIndex + 1}/6`
-      : `Face ${this.calibrationIndex + 1}/6`;
-    for (const li of this.el.faceProgress.children) {
-      li.classList.toggle('is-current', this.mode === 'scan' && li.dataset.face === face);
-      li.classList.toggle('is-done', this.mode === 'scan' && !!this.scanned[li.dataset.face]);
-    }
+    const colour = COLOR_OF_LETTER[face].name;
+    this.el.scanStep.textContent = `Face ${Math.min(count + 1, 6)} of 6 · ${colour}`;
+    this.el.scanInstruction.textContent = SCAN_INSTRUCTIONS[face];
+    this.el.miniCaption.textContent = `Hold it like this: ${colour.toLowerCase()} towards the camera, ${COLOR_OF_LETTER[SCAN_UP[face]].name.toLowerCase()} on top.`;
+    if (this.scanner.ready) this.el.scanBadge.textContent = `${colour} face`;
+
+    // The guide cube shows the solved colours plus whatever has been scanned,
+    // turned the way the real cube should be held right now.
     const view = this.view('scan');
+    view.setAutoRotate(false);
+    view.setInteractive(false);
+    const guide = SOLVED_FACELETS.split('');
+    for (const [f, nine] of Object.entries(this.scanned)) {
+      const letters = previewFace(nine, this._scanCentres());
+      const base = FACE_NAMES.indexOf(f) * 9;
+      letters.forEach((l, i) => { if (i !== 4 && l) guide[base + i] = l; });
+    }
+    view.setState(guide.join(''));
+    view.orientTo(face, SCAN_UP[face]);
     view.setHighlight([]);
-    view.showFaceIndicator(face);
+    view.showFaceIndicator(null);
   }
 
-  async _capture() {
+  /** The centre sample of every face captured so far. */
+  _scanCentres() {
+    const out = {};
+    for (const [f, nine] of Object.entries(this.scanned)) out[f] = nine[4];
+    return out;
+  }
+
+  _resetHold() {
+    this._scanHistory = [];
+    this._holdStart = null;
+    this.el.scanHoldBar.style.transform = 'scaleX(0)';
+  }
+
+  _startScanLoop() {
+    clearInterval(this._scanTimer);
+    this._resetHold();
+    this._cooldownUntil = 0;
+    this._scanTimer = setInterval(() => this._scanTick(), 120);
+  }
+
+  _stopScanLoop() {
+    clearInterval(this._scanTimer);
+    this._scanTimer = null;
+  }
+
+  /** Several times a second: preview the nine stickers, auto-capture when steady. */
+  _scanTick() {
+    if (this.current !== 'scan' || !this.scanner.ready || !this.scanFace) return;
+    const nine = this.scanner.sampleGrid();
+    if (!nine) return;
+    this._lastSample = nine;
+
+    // Live preview of what each sticker is being read as.
+    const centres = { ...this._scanCentres(), [this.scanFace]: nine[4] };
+    const letters = previewFace(nine, centres);
+    const cube = looksLikeCube(nine);
+    Array.from(this.el.scanCells.children).forEach((cell, i) => {
+      cell.style.background = cube && letters[i] ? COLOR_OF_LETTER[letters[i]].hex : 'transparent';
+      cell.classList.toggle('is-empty', !cube);
+    });
+
+    const now = performance.now();
+    const history = this._scanHistory;
+    history.push({ t: now, nine });
+    while (history.length && now - history[0].t > 900) history.shift();
+
+    const problem = this._scanProblem(nine, cube);
+    const steady = !problem && history.length >= 4
+      && history.every((h) => gridChange(h.nine, nine) < 9);
+
+    if (problem) {
+      this.el.scanHint.textContent = problem;
+      this._holdStart = null;
+    } else if (!steady) {
+      this.el.scanHint.textContent = `Hold the ${COLOR_OF_LETTER[this.scanFace].name.toLowerCase()} face steady inside the square…`;
+      this._holdStart = null;
+    } else if (this.el.autoCapture.checked && now >= this._cooldownUntil) {
+      if (this._holdStart === null) this._holdStart = now;
+      this.el.scanHint.textContent = 'Got it — keep still…';
+      if (now - this._holdStart >= 700) { this._capture({ auto: true }); return; }
+    } else {
+      this.el.scanHint.textContent = 'Looks good — press Capture now.';
+    }
+    const progress = this._holdStart === null ? 0 : Math.min(1, (now - this._holdStart) / 700);
+    this.el.scanHoldBar.style.transform = `scaleX(${progress})`;
+  }
+
+  /** Why the current picture should not be captured yet, or null if it is fine. */
+  _scanProblem(nine, cube) {
+    const light = lightingAdvice(nine);
+    if (light && light.brightness < 0.18) return 'It is too dark to read the colours — move to brighter light.';
+    if (!cube) return `Fill the square with the ${COLOR_OF_LETTER[this.scanFace].name.toLowerCase()} face of the cube.`;
+    // The centre must be a colour not captured yet; otherwise the cube has
+    // not been turned since the last face.
+    const centres = this._scanCentres();
+    for (const [f, rgb] of Object.entries(centres)) {
+      if (f === this.scanFace) continue;
+      if (gridChange([rgb, rgb, rgb, rgb, rgb, rgb, rgb, rgb, rgb], new Array(9).fill(nine[4])) < 14) {
+        return `That is the ${COLOR_OF_LETTER[f].name.toLowerCase()} face again — turn the cube so the ${COLOR_OF_LETTER[this.scanFace].name.toLowerCase()} centre faces the camera.`;
+      }
+    }
+    return null;
+  }
+
+  _capture({ auto = false } = {}) {
     if (!this.scanner.ready) {
       this._toast('The camera is not ready yet.');
       return;
     }
-    if (this.mode === 'calibrate') {
-      const face = SCAN_ORDER[this.calibrationIndex];
-      try {
-        this.scanner.captureCalibration(face);
-      } catch (err) {
-        this._toast(err.message);
-        return;
-      }
-      this.calibrationIndex += 1;
-      if (this.calibrationIndex < SCAN_ORDER.length) {
-        this._updateScanStep();
-        this._toast(`${COLOR_OF_LETTER[face].name} centre recorded.`);
-        return;
-      }
-      this.mode = 'scan';
-      this.calibrationIndex = 0;
-      this.el.grid.classList.remove('is-calibrating');
-      this._updateScanStep();
-      this._toast('Centres captured. Now scan each face.');
-      return;
-    }
-
-    const face = SCAN_ORDER[this.calibrationIndex];
+    const face = this.scanFace;
     if (!face) return;
-    const { results, letters } = this.scanner.scanFace();
-    this.scanned[face] = letters;
-    this._applyScanned();
+    const nine = this.scanner.sampleGrid() || this._lastSample;
+    if (!nine) { this._toast('Could not read the picture — try again.'); return; }
+    // A manual capture is always taken, even if it looks doubtful: the user
+    // can see the cube and we cannot. Two faces that look alike are reported
+    // when the scan finishes, and every face can be tapped to scan it again.
+    void auto;
+    this.scanned[face] = nine;
+    this._resetHold();
+    this._cooldownUntil = performance.now() + 900;
+    this._toast(`${COLOR_OF_LETTER[face].name} face captured.`);
 
-    const warnings = [];
-    if (letters[4] && letters[4] !== face) {
-      warnings.push(`The middle sticker looked ${COLOR_OF_LETTER[letters[4]].name.toLowerCase()}, not ${COLOR_OF_LETTER[face].name.toLowerCase()} — was the right face showing?`);
-    }
-    if (results.some((r) => !r || r.confidence < 0.35)) {
-      warnings.push('Some stickers were hard to read — check them before continuing.');
-    }
-    this.el.scanHint.textContent = warnings[0] || `Captured the ${COLOR_OF_LETTER[face].name.toLowerCase()} face.`;
-
-    this.calibrationIndex += 1;
-    if (this.calibrationIndex < SCAN_ORDER.length) {
-      this._updateScanStep();
+    if (Object.keys(this.scanned).length < 6) {
+      this._nextScanFace();
       return;
     }
-    // All six faces captured.
-    this._stopCamera();
-    const ok = validate(this.facelets).valid;
-    this._toast(ok
-      ? 'Scanning finished. Check the result on the next screen.'
-      : 'Scanning finished — a few stickers need checking.');
-    this.go('review');
+    this._finishScan();
   }
 
-  /** Copy what has been scanned so far into the shared state. */
-  _applyScanned() {
-    const next = this.facelets.split('');
-    for (const [face, letters] of Object.entries(this.scanned)) {
-      if (!letters) continue;
-      const base = FACE_NAMES.indexOf(face) * 9;
-      for (let i = 0; i < 9; i++) {
-        if (i === 4) continue;                       // centres are fixed by definition
-        if (letters[i]) next[base + i] = letters[i];
-      }
+  /** All six faces are in: read every sticker against the six centres. */
+  _finishScan() {
+    this._stopScanLoop();
+    this._stopCamera();
+    const result = classifyCube(this.scanned);
+    if (result.similarCentres.length) {
+      const [a, b] = result.similarCentres[0];
+      this._toast(`The ${COLOR_OF_LETTER[a].name.toLowerCase()} and ${COLOR_OF_LETTER[b].name.toLowerCase()} centres looked the same — check those faces.`);
     }
-    this.facelets = next.join('');
-    this.net.set(this.facelets, { record: true, cause: 'scan' });
-    // The little guide cube shows only what has been scanned so far, on top of
-    // a solved cube, rather than whatever was in the editor before scanning.
-    if (this.views.scan) {
-      const guide = SOLVED_FACELETS.split('');
-      for (const face of Object.keys(this.scanned)) {
-        const base = FACE_NAMES.indexOf(face) * 9;
-        for (let i = 0; i < 9; i++) guide[base + i] = this.facelets[base + i];
-      }
-      this.views.scan.setState(guide.join(''));
-    }
+    const repaired = repairToValid(result.facelets, this.scanned, validate);
+    this.net.set(repaired.facelets, { record: true, cause: 'scan' });
+    this.facelets = repaired.facelets;
+    // Outline anything the reader was unsure about, for the user to check.
+    this.scanUncertain = [...new Set([...result.uncertain, ...repaired.swapped])];
+    const ok = validate(this.facelets).valid;
+    this.go('review');
+    this._toast(ok
+      ? 'Scanned! Check it matches your cube, then solve.'
+      : 'Scanned — a few stickers need checking. Tap “Edit colours” to fix them.');
   }
 
   _stopCamera() {
+    this._stopScanLoop();
     if (this.scanner.stream) this.scanner.stop();
     if (this.el.video.srcObject) this.el.video.srcObject = null;
   }

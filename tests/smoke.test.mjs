@@ -205,6 +205,51 @@ try {
   });
   check('the 3D cube shows the right colours after animated turns', wrongStickers === 0, `${wrongStickers} wrong`);
 
+  // Regression: every one of the 12 turns must ANIMATE in the direction of the
+  // move itself, i.e. at the end of the animation (before the stickers are
+  // repainted) the picture already matches the new state. D, L and B used to
+  // turn backwards and then snap.
+  const backwards = await page.evaluate(async () => {
+    const view = window.Cubix.views.solve;
+    const { FACELET_INFO, CUBIES, COLOR_OF_LETTER, SOLVED_FACELETS } = await import('./js/core/cube-model.js');
+    const THREE = await import('./vendor/three.js');
+    const original = view._rehome.bind(view);
+    const bad = {};
+    let current = null;
+    view._rehome = (members) => {
+      if (current && view.animating) {
+        view.pivot.updateMatrixWorld(true);
+        let wrong = 0;
+        for (const cubie of view.cubies) {
+          for (const sticker of Object.values(cubie.userData.stickers)) {
+            const p = new THREE.Vector3(); sticker.getWorldPosition(p); view.root.worldToLocal(p);
+            const c = new THREE.Vector3(); cubie.getWorldPosition(c); view.root.worldToLocal(c);
+            const d = p.clone().sub(c);
+            const axis = ['x', 'y', 'z'].reduce((a, b) => (Math.abs(d[a]) > Math.abs(d[b]) ? a : b));
+            const face = axis === 'x' ? (d.x > 0 ? 'R' : 'L') : axis === 'y' ? (d.y > 0 ? 'U' : 'D') : (d.z > 0 ? 'F' : 'B');
+            const pos = [c.x, c.y, c.z].map(Math.round).join();
+            const info = FACELET_INFO.find((f) => f.face === face && CUBIES[f.slot].pos.join() === pos);
+            if (!info || !sticker.material.color.equals(new THREE.Color(COLOR_OF_LETTER[view.animating.after[info.index]].hex))) wrong++;
+          }
+        }
+        if (wrong) bad[current] = wrong;
+      }
+      return original(members);
+    };
+    const saved = view.facelets;
+    for (const mv of ['U', "U'", 'R', "R'", 'F', "F'", 'D', "D'", 'L', "L'", 'B', "B'"]) {
+      view.setState(SOLVED_FACELETS);
+      current = mv;
+      view.applyMove(mv, { animate: true });
+      while (view.busy) await new Promise((r) => setTimeout(r, 30));
+    }
+    view._rehome = original;
+    view.setState(saved);
+    return bad;
+  });
+  check('all 12 turns animate in the direction of the move', Object.keys(backwards).length === 0,
+    JSON.stringify(backwards));
+
   // Regression: playing part of the solution and going back must not change
   // the cube the user entered.
   const entered = await page.evaluate(() => window.Cubix.facelets);
@@ -245,6 +290,14 @@ try {
   );
   const stageCount = await page.$$eval('.step-stage', (els) => els.length);
   check('beginner method shows all 7 stages', stageCount === 7, `saw ${stageCount}`);
+  // Regression: the move written on step N must be the move the cube plays at
+  // step N (the list used to be built from different moves than were played).
+  const listMatches = await page.evaluate(() => {
+    const shown = [...document.querySelectorAll('.step-row .step-move')].map((e) => e.textContent);
+    const played = window.Cubix.player.steps.map((s) => s.move);
+    return shown.length === played.length && shown.every((m, i) => m === played[i]);
+  });
+  check('every beginner step on screen is the move actually played', listMatches);
 
   const beginnerMoves = await page.$$eval('.step-row', (els) => els.length);
   for (let i = 0; i < beginnerMoves + 2; i++) {
@@ -299,6 +352,16 @@ try {
   const helpVisible = await page.$eval('#sheet-help', (el) => !el.hidden);
   check('notation cheat sheet opens', helpVisible);
   await page.click('#sheet-help [data-close-sheet]');
+
+  const spinBefore = await page.evaluate(() => window.Cubix.spin);
+  await page.click('#btn-spin');
+  const spinAfter = await page.evaluate(() => ({
+    spin: window.Cubix.spin,
+    views: Object.values(window.Cubix.views).every((v) => v.autoRotate === false),
+  }));
+  check('the spin button stops every cube spinning', spinBefore === true && spinAfter.spin === false && spinAfter.views,
+    JSON.stringify(spinAfter));
+  await page.click('#btn-spin');
 
   const themeBefore = await page.evaluate(() => document.documentElement.dataset.theme);
   await page.click('#btn-theme');

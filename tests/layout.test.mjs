@@ -157,7 +157,7 @@ const VIEWPORTS = [
   { name: 'phone 390x844', width: 390, height: 844 },
   { name: 'small phone 320x568', width: 320, height: 568 },
 ];
-const SCREENS = ['landing', 'manual', 'review', 'solve'];
+const SCREENS = ['landing', 'scan', 'manual', 'review', 'solve'];
 
 try {
   for (const vp of VIEWPORTS) {

@@ -1,41 +1,46 @@
 /**
- * scanner.js — read a cube from the webcam, one face at a time.
+ * scanner.js — read a cube from the camera, one face at a time.
  *
  * Privacy: frames are drawn into an offscreen canvas, averaged down to nine
  * colours, and then discarded. Nothing is uploaded, stored, or sent anywhere —
  * the camera stream is stopped as soon as scanning finishes.
  *
- * The flow is:
- *   1. calibrate  — the user shows each face's centre; we keep those six colours
- *                   as reference clusters for that cube in that lighting.
- *   2. scan       — for each face in turn, sample a 3x3 grid and classify.
- *   3. confirm    — the user reviews the detected 3x3 and taps any sticker to fix.
+ * The flow:
+ *   1. The user shows each face in turn, held a specific way (SCAN_STEPS).
+ *      While the camera is pointed at the cube, the nine stickers are sampled
+ *      several times a second and previewed live on the grid.
+ *   2. When the cube has been held still for a moment, the face is captured
+ *      automatically (the Capture button does the same thing on demand).
+ *   3. After all six faces, the six CENTRE stickers become the colour
+ *      references and every sticker is matched to them (classifyCube), so the
+ *      colours are judged on the user's own cube, in the user's own light.
  *
- * Because the cube must be turned between faces, the app tells the user exactly
- * which face to show and how to hold it (see SCAN_ORDER below).
+ * How each face is held matters: the nine samples are read row by row as the
+ * camera sees them, and that must line up with how the cube model numbers the
+ * stickers of that face. The holds below are exactly that numbering:
+ *   - the four side faces with WHITE on top,
+ *   - the white face with BLUE on top (tip the top of the cube towards you),
+ *   - the yellow face with GREEN on top (tip the bottom towards you).
  */
-import {
-  sampleRegion, classifyByHsv, createCalibratedClassifier, assessLighting, rgbToLab,
-} from './classifier.js';
-import { FACE_NAMES, COLOR_OF_LETTER } from '../core/cube-model.js';
+import { sampleRegion, assessLighting, rgbToHsv, stickerLab, stickerDistance } from './classifier.js';
+import { COLOR_OF_LETTER } from '../core/cube-model.js';
 
-/** Faces in scanning order, with the instruction shown for each. */
-export const SCAN_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'];
+/** Faces in scanning order: round the sides, then the top, then the bottom. */
+export const SCAN_ORDER = ['F', 'R', 'B', 'L', 'U', 'D'];
+
+/** Which face must be at the top of the picture for each face being scanned. */
+export const SCAN_UP = { F: 'U', R: 'U', B: 'U', L: 'U', U: 'B', D: 'F' };
+
+const name = (letter) => COLOR_OF_LETTER[letter].name.toLowerCase();
+
+/** What to tell the user for each face. */
 export const SCAN_INSTRUCTIONS = {
-  U: 'White face up. Hold the cube with green towards you.',
-  R: 'Turn the cube so the RED face is up. Keep green on the left.',
-  F: 'Turn the cube so the GREEN face is up. Keep white on the right.',
-  D: 'Turn the cube so the YELLOW face is up. Keep green towards you.',
-  L: 'Turn the cube so the ORANGE face is up. Keep green on the right.',
-  B: 'Turn the cube so the BLUE face is up. Keep white on the left.',
-};
-export const CALIBRATION_INSTRUCTIONS = {
-  U: 'Show the WHITE centre',
-  R: 'Show the RED centre',
-  F: 'Show the GREEN centre',
-  D: 'Show the YELLOW centre',
-  L: 'Show the ORANGE centre',
-  B: 'Show the BLUE centre',
+  F: `Hold the cube with the ${name('F')} centre facing the camera and ${name('U')} on top.`,
+  R: `Turn the whole cube a quarter turn so the ${name('R')} centre faces the camera. Keep ${name('U')} on top.`,
+  B: `Another quarter turn: ${name('B')} centre facing the camera, ${name('U')} still on top.`,
+  L: `One more quarter turn: ${name('L')} centre facing the camera, ${name('U')} on top.`,
+  U: `Now tip the cube so the ${name('U')} centre faces the camera, with ${name('B')} on top.`,
+  D: `Last one: ${name('D')} centre facing the camera, with ${name('F')} on top.`,
 };
 
 export class Scanner {
@@ -44,8 +49,6 @@ export class Scanner {
     this.video = null;
     this.canvas = null;
     this.ctx = null;
-    this.classifier = null;
-    this.calibration = {};
     this.facingMode = 'environment';
   }
 
@@ -55,7 +58,9 @@ export class Scanner {
    */
   async start(prefer = 'environment') {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      const err = new Error('This browser does not expose a camera API.');
+      const err = new Error(window.isSecureContext === false
+        ? 'The camera only works on a secure (https://) page. You can enter the colours by hand instead.'
+        : 'This browser does not expose a camera API. You can enter the colours by hand instead.');
       err.code = 'UNSUPPORTED';
       throw err;
     }
@@ -72,6 +77,8 @@ export class Scanner {
       } catch (e) {
         lastError = e;
         this.stream = null;
+        // A refusal will not change by asking for the other camera.
+        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) break;
       }
     }
     if (!this.stream) throw normaliseCameraError(lastError);
@@ -104,10 +111,23 @@ export class Scanner {
   }
 
   get ready() {
-    return !!(this.video && this.video.readyState >= 2);
+    return !!(this.video && this.video.readyState >= 2 && this.video.videoWidth > 0);
   }
 
-  /** Flip to the other camera, keeping the same session state. */
+  /**
+   * True when the picture should be shown mirrored: a camera that faces the
+   * user (a selfie camera or a laptop webcam). Only the on-screen picture is
+   * mirrored; the samples are always read from the real, unmirrored frame.
+   */
+  get mirrored() {
+    const track = this.stream && this.stream.getVideoTracks()[0];
+    const settings = track && track.getSettings ? track.getSettings() : {};
+    if (settings.facingMode) return settings.facingMode === 'user';
+    // Laptops do not report a facing mode; their only camera faces the user.
+    return this.facingMode === 'user' || !/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  }
+
+  /** Flip to the other camera. */
   async switchCamera() {
     const prefer = this.facingMode === 'environment' ? 'user' : 'environment';
     this.stop();
@@ -115,148 +135,95 @@ export class Scanner {
   }
 
   /**
-   * Grab the current frame and return an ImageData plus the square region of
-   * interest (centred, sized to the smaller video dimension).
+   * Grab the current frame and return the square region of interest: centred,
+   * 62% of the shorter side (the overlay square on screen is drawn to match).
    */
   grab() {
-    if (!this.ready) return null;
-    const vw = this.video.videoWidth || 640;
-    const vh = this.video.videoHeight || 480;
+    if (!this.ready || !this.ctx) return null;
+    const vw = this.video.videoWidth;
+    const vh = this.video.videoHeight;
     const size = Math.floor(Math.min(vw, vh) * 0.62);
     const x = Math.floor((vw - size) / 2);
     const y = Math.floor((vh - size) / 2);
-    this.canvas.width = vw;
-    this.canvas.height = vh;
-    this.ctx.drawImage(this.video, 0, 0, vw, vh);
-    const imageData = this.ctx.getImageData(x, y, size, size);
+    // Only the square is needed, so only the square is drawn and read.
+    this.canvas.width = size;
+    this.canvas.height = size;
+    this.ctx.drawImage(this.video, x, y, size, size, 0, 0, size, size);
+    const imageData = this.ctx.getImageData(0, 0, size, size);
     return { imageData, region: { x, y, size, vw, vh } };
   }
 
   /**
    * Sample the 3x3 grid over the region of interest.
-   * @returns {Array<{r:number,g:number,b:number}|null>} nine colours, row-major
+   * @returns {Array<{r:number,g:number,b:number}>|null} nine colours, row-major
    */
   sampleGrid() {
     const frame = this.grab();
-    if (!frame) return new Array(9).fill(null);
+    if (!frame) return null;
     const { imageData, region } = frame;
-    const { size } = region;
-    const cell = size / 3;
+    const cell = region.size / 3;
     const out = [];
     for (let row = 0; row < 3; row++) {
       for (let col = 0; col < 3; col++) {
-        const cx = col * cell + cell / 2;
-        const cy = row * cell + cell / 2;
-        // sample the middle of the cell so small alignment errors do not matter
-        out.push(sampleRegion(imageData, { x: cx, y: cy, size: cell * 0.5 }));
+        // The middle of each cell, so small alignment errors do not matter.
+        out.push(sampleRegion(imageData, { x: col * cell + cell / 2, y: row * cell + cell / 2, size: cell * 0.45 }));
       }
     }
-    return out;
+    return out.some((c) => !c) ? null : out;
   }
+}
 
-  /** Average colour of the centre cell, used for lighting advice. */
-  centreSample() {
-    const frame = this.grab();
-    if (!frame) return null;
-    const { imageData, region } = frame;
-    return sampleRegion(imageData, { x: region.size / 2, y: region.size / 2, size: region.size * 0.2 });
+/* ------------------------------------------------------------------ *
+ * Helpers for the live capture loop
+ * ------------------------------------------------------------------ */
+
+/** Largest colour change of any of the nine stickers between two samples. */
+export function gridChange(a, b) {
+  if (!a || !b) return Infinity;
+  let worst = 0;
+  for (let i = 0; i < 9; i++) {
+    const d = stickerDistance(stickerLab(a[i]), stickerLab(b[i]));
+    const dv = Math.abs(rgbToHsv(a[i]).v - rgbToHsv(b[i]).v) * 100;
+    worst = Math.max(worst, d, dv);
   }
-
-  /** Current lighting assessment for the on-screen hint. */
-  lighting() {
-    const rgb = this.centreSample();
-    if (!rgb) return null;
-    return assessLighting(rgb);
-  }
-
-  /* ---------------------------- calibration ---------------------------- */
-
-  /**
-   * Record the centre colour of `letter` from the middle of the frame.
-   * @returns {{r:number,g:number,b:number}}
-   */
-  captureCalibration(letter) {
-    const rgb = this.centreSample();
-    if (!rgb) throw new Error('The camera is not ready yet.');
-    this.calibration[letter] = rgb;
-    this.classifier = createCalibratedClassifier(this.calibration);
-    return rgb;
-  }
-
-  /**
-   * Accept a batch of calibration colours captured elsewhere (used by the tests
-   * and by the "skip calibration" path).
-   */
-  setCalibration(samples) {
-    this.calibration = { ...samples };
-    this.classifier = createCalibratedClassifier(this.calibration);
-    return this.classifier;
-  }
-
-  get calibrated() {
-    return FACE_NAMES.every((f) => this.calibration[f]);
-  }
-
-  /* ------------------------------- scanning ------------------------------- */
-
-  /**
-   * Read the nine stickers currently in view.
-   * @returns {{colours: Array<{r,g,b}>, letters: Array<string|null>, results: Array}}
-   */
-  scanFace() {
-    const colours = this.sampleGrid();
-    const results = colours.map((rgb) => this._classifyOne(rgb));
-    return { colours, results, letters: results.map((r) => (r ? r.letter : null)) };
-  }
-
-  _classifyOne(rgb) {
-    if (!rgb) return null;
-    if (this.classifier) return this.classifier.classify(rgb);
-    return classifyByHsv(rgb);
-  }
-
-  /**
-   * Classify nine colours that were captured earlier (used when re-processing a
-   * held frame, and by the tests).
-   */
-  classifyGrid(colours) {
-    return colours.map((rgb) => this._classifyOne(rgb));
-  }
+  return worst;
 }
 
 /**
- * After a face is scanned, check the result for obvious mistakes: the centre
- * must match the face being scanned, and no colour may appear more than nine
- * times across the whole cube.
+ * Does this look like a face of a cube (rather than the table, a hand or the
+ * wall)? Cube stickers are either clearly coloured or bright white, and are
+ * not dark. Eight of the nine cells must look like that.
  */
-export function reviewFace(letters, expectedCentreLetter) {
-  const warnings = [];
-  if (!letters || letters.length !== 9) {
-    return { ok: false, warnings: ['Could not read nine stickers. Try again with the cube filling the frame.'] };
+export function looksLikeCube(nine) {
+  if (!nine) return false;
+  let good = 0;
+  for (const rgb of nine) {
+    const { s, v } = rgbToHsv(rgb);
+    if (v > 0.16 && (s > 0.35 || (s < 0.3 && v > 0.42))) good++;
   }
-  const centre = letters[4];
-  if (centre !== expectedCentreLetter) {
-    warnings.push(`The centre should be ${COLOR_OF_LETTER[expectedCentreLetter].name} — double check you are showing the right face.`);
-  }
-  if (letters.some((l) => !l)) {
-    warnings.push('One or more stickers could not be identified. Tap a sticker to set it by hand.');
-  }
-  return { ok: warnings.length === 0, warnings, centre };
+  return good >= 8;
+}
+
+/** Lighting advice for the middle of the picture. */
+export function lightingAdvice(nine) {
+  if (!nine) return null;
+  const c = nine[4];
+  return assessLighting(c);
 }
 
 function normaliseCameraError(error) {
-  const name = (error && error.name) || '';
+  const errName = (error && error.name) || '';
   const message = new Error('');
-  if (name === 'NotAllowedError' || name === 'SecurityError') {
-    message.message = 'Camera access was blocked. Allow the camera in your browser settings (or the address bar) and try again.';
+  if (errName === 'NotAllowedError' || errName === 'SecurityError') {
+    message.message = 'Camera access was blocked. Allow the camera in your browser settings (or the address bar) and try again — or enter the colours by hand.';
     message.code = 'DENIED';
-  } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+  } else if (errName === 'NotFoundError' || errName === 'DevicesNotFoundError') {
     message.message = 'No camera was found on this device. You can enter the colours by hand instead.';
     message.code = 'NO_CAMERA';
-  } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+  } else if (errName === 'NotReadableError' || errName === 'TrackStartError') {
     message.message = 'The camera is already in use by another app. Close it and try again.';
     message.code = 'BUSY';
-  } else if (name === 'OverconstrainedError') {
+  } else if (errName === 'OverconstrainedError') {
     message.message = 'No camera matches the requested settings. Try the other camera.';
     message.code = 'CONSTRAINED';
   } else {
@@ -265,4 +232,49 @@ function normaliseCameraError(error) {
   }
   message.cause = error;
   return message;
+}
+
+/**
+ * If the colours read do not make a possible cube (a twisted corner, a flipped
+ * edge or a parity error — usually one pair of stickers read the wrong way
+ * round), try swapping each pair among the least certain stickers and keep
+ * the cheapest swap that gives a real cube.
+ *
+ * @param {string} facelets result of classifyCube
+ * @param {Object<string, Array<{r,g,b}>>} faces the raw samples
+ * @param {(f:string)=>{valid:boolean}} validateFn
+ * @returns {{facelets:string, swapped:number[]}}
+ */
+export function repairToValid(facelets, faces, validateFn) {
+  if (validateFn(facelets).valid) return { facelets, swapped: [] };
+  const order = ['U', 'R', 'F', 'D', 'L', 'B'];
+  const centre = Object.fromEntries(order.map((f) => [f, stickerLab(faces[f][4])]));
+  const labOf = (i) => stickerLab(faces[order[Math.floor(i / 9)]][i % 9]);
+  const cost = (i, letter) => stickerDistance(labOf(i), centre[letter]);
+
+  // The stickers whose second-best colour is nearly as good as their own.
+  const margin = [];
+  for (let i = 0; i < 54; i++) {
+    if (i % 9 === 4) continue;
+    const own = cost(i, facelets[i]);
+    const next = Math.min(...order.filter((f) => f !== facelets[i]).map((f) => cost(i, f)));
+    margin.push({ i, gap: next - own });
+  }
+  margin.sort((a, b) => a.gap - b.gap);
+  const pool = margin.slice(0, 16).map((m) => m.i);
+
+  let best = null;
+  for (let a = 0; a < pool.length; a++) {
+    for (let b = a + 1; b < pool.length; b++) {
+      const i = pool[a], j = pool[b];
+      if (facelets[i] === facelets[j]) continue;
+      const s = facelets.split('');
+      [s[i], s[j]] = [s[j], s[i]];
+      const next = s.join('');
+      if (!validateFn(next).valid) continue;
+      const extra = cost(i, next[i]) + cost(j, next[j]) - cost(i, facelets[i]) - cost(j, facelets[j]);
+      if (!best || extra < best.extra) best = { facelets: next, swapped: [i, j], extra };
+    }
+  }
+  return best ? { facelets: best.facelets, swapped: best.swapped } : { facelets, swapped: [] };
 }

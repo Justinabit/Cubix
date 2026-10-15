@@ -44,6 +44,9 @@
     <span class="brand-name">Cubix</span>
   </div>
   <nav class="topbar-actions" aria-label="Site">
+    <button type="button" id="btn-spin" class="icon-button" aria-label="Stop the cube spinning" aria-pressed="false" title="Stop the cube spinning">
+      <svg class="spin-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4.5h-4.5"/><path class="spin-slash" d="M4 4l16 16"/></svg>
+    </button>
     <button type="button" id="btn-help" class="icon-button" aria-label="Notation cheat sheet">
       <span aria-hidden="true">?</span>
     </button>
@@ -89,37 +92,46 @@
     <div class="screen-head">
       <button type="button" class="button button-ghost button-back" data-goto="landing">← Back</button>
       <h2 id="scan-title">Scan your cube</h2>
-      <p class="screen-sub">We scan one face at a time. First, show us the six centres so we know your exact colours and lighting.</p>
+      <p class="screen-sub">Show each face to the camera, held the way the small cube shows. Keep the face inside the square and hold still — it captures by itself. Each face's centre sticker sets that colour, so the colours are judged on your own cube in your own light.</p>
     </div>
 
     <div class="scan-layout">
       <div class="scan-stage">
         <div class="video-wrap" id="video-wrap">
           <video id="camera" playsinline muted autoplay></video>
-          <div class="grid-overlay" id="grid-overlay" aria-hidden="true"></div>
+          <div class="grid-overlay" id="grid-overlay" aria-hidden="true">
+            <div class="scan-square">
+              <div class="scan-cells" id="scan-cells"></div>
+              <div class="scan-hold" id="scan-hold"><span id="scan-hold-bar"></span></div>
+            </div>
+          </div>
           <div class="scan-badge" id="scan-badge">Camera off</div>
         </div>
         <p class="hint scan-hint" id="scan-hint" aria-live="polite">Allow camera access if your browser asks.</p>
         <div class="scan-controls">
           <button type="button" class="button button-primary button-capture" id="btn-capture" disabled>
             <span class="button-icon" aria-hidden="true">◎</span>
-            Capture
+            Capture now
           </button>
           <button type="button" class="button" id="btn-switch-camera">Flip camera</button>
-          <button type="button" class="button button-ghost" id="btn-restart-calibration">Redo centres</button>
+          <button type="button" class="button button-ghost" id="btn-scan-restart">Start over</button>
+          <label class="toggle scan-auto">
+            <input type="checkbox" id="chk-auto-capture" checked>
+            <span>Capture automatically when held still</span>
+          </label>
         </div>
       </div>
 
       <aside class="scan-side">
-        <h3 class="side-title" id="scan-step-title">Step 1 of 7 · Centres</h3>
-        <p class="side-instruction" id="scan-instruction">Centre the cube in the grid, then capture.</p>
+        <h3 class="side-title" id="scan-step-title">Face 1 of 6</h3>
+        <p class="side-instruction" id="scan-instruction">Hold the cube with the green centre facing the camera and white on top.</p>
 
         <div class="mini-guide">
           <div class="cube-stage cube-stage-mini" id="scan-stage"><canvas id="scan-canvas"></canvas></div>
-          <p class="mini-caption" id="mini-caption">Show the white centre</p>
+          <p class="mini-caption" id="mini-caption">Hold it like this</p>
         </div>
 
-        <ol class="face-progress" id="face-progress" aria-label="Faces scanned"></ol>
+        <ol class="face-progress" id="face-progress" aria-label="Faces scanned — tap one to scan it again"></ol>
       </aside>
     </div>
 
@@ -206,6 +218,10 @@
     <div class="solve-layout">
       <div class="solve-stage">
         <div class="cube-stage cube-stage-large" id="solve-stage"><canvas id="solve-canvas"></canvas></div>
+        <div class="hold-note">
+          <p>Hold your cube like the one shown: <strong>white on top</strong>, <strong>green facing you</strong>. Keep it that way for every move.</p>
+          <button type="button" class="button button-ghost" id="btn-solve-view">Front view</button>
+        </div>
         <div class="move-readout">
           <div class="move-now" id="move-now" aria-live="polite">
             <span class="move-glyph" id="move-glyph">—</span>

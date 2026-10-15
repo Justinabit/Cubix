@@ -270,6 +270,30 @@ export class Cube3D {
     this.autoRotate = !!on;
   }
 
+  /** Let the user spin/zoom the cube by dragging (on by default). */
+  setInteractive(on) {
+    this.controls.enabled = !!on;
+  }
+
+  /**
+   * Turn the whole cube so `face` looks at the viewer with `up` on top — used
+   * to show how to hold the real cube for each scan.
+   */
+  orientTo(face, up, { animate = true } = {}) {
+    const b = AXIS[face].clone();
+    const a = AXIS[up].clone();
+    const c = new THREE.Vector3().crossVectors(a, b);
+    // Rotation taking c -> x, a -> y, b -> z (the transpose of the basis).
+    const m = new THREE.Matrix4().makeBasis(c, a, b).transpose();
+    const q = new THREE.Quaternion().setFromRotationMatrix(m);
+    if (!animate || this._reducedMotion()) {
+      this.root.quaternion.copy(q);
+      this._orientTarget = null;
+    } else {
+      this._orientTarget = q;
+    }
+  }
+
   setShowLetters(on) {
     this.showLetters = !!on;
     for (const cubie of this.cubies) {
@@ -326,6 +350,9 @@ export class Cube3D {
     this.camera.position.set(4.6, 4.2, 6.2);
     this.controls.target.set(0, 0, 0);
     this.controls.update();
+    this.root.quaternion.identity();
+    this._orientTarget = null;
+    this._lastInteraction = performance.now();
   }
 
   resize() {
@@ -341,6 +368,14 @@ export class Cube3D {
   render(now) {
     this.controls.update();
     this._stepAnimation(now);
+
+    if (this._orientTarget) {
+      this.root.quaternion.slerp(this._orientTarget, 0.14);
+      if (this.root.quaternion.angleTo(this._orientTarget) < 0.002) {
+        this.root.quaternion.copy(this._orientTarget);
+        this._orientTarget = null;
+      }
+    }
 
     // Idle spin: only when the user has not touched anything for a moment and
     // nothing is animating.
@@ -383,9 +418,13 @@ export class Cube3D {
     const axis = AXIS[next.face];
     const layer = next.face === 'U' || next.face === 'D' ? 'y'
       : next.face === 'R' || next.face === 'L' ? 'x' : 'z';
+    // Which layer turns: +1 for the U/R/F side of the cube, -1 for D/L/B.
     const sign = next.face === 'U' || next.face === 'R' || next.face === 'F' ? 1 : -1;
-    // A clockwise turn (as seen from outside) is -90° about the outward normal.
-    const target = -Math.PI / 2 * next.sign * sign;
+    // A clockwise turn (as seen from outside) is -90° about the face's OUTWARD
+    // normal. `axis` already is that outward normal (D is -y, L is -x, B is -z),
+    // so the side of the cube must not flip the angle a second time; doing so
+    // made every D, L and B turn animate backwards and then snap into place.
+    const target = -Math.PI / 2 * next.sign;
 
     // Move the nine cubies of this layer into the pivot.
     const members = [];

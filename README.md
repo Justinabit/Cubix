@@ -167,19 +167,27 @@ phase 1 reaches G1 = ⟨U, D, R2, L2, F2, B2⟩ using pruning tables over
 permutation). Tables take about 1.5 s to build and are built once per page load,
 with a progress indicator and yields so the page stays responsive.
 
-**Colour classification is comparative, not absolute.** Absolute hue thresholds
-fail badly under a warm bulb or when a phone's auto-white-balance shifts. So
-after you show the six centres, the app measures *your* six colours in *your*
-lighting and classifies every other sticker by nearest neighbour in Lab space,
-which approximates perceptual distance. Before calibration it falls back to HSV
-reasoning. Red versus orange — the classic confusion — is separated by hue and
-saturation together, and both paths are covered by `tests/classifier.test.mjs`
-under simulated warm, cool, dim and bright lighting.
+**Scanning is automatic and judged against your own centres.** You show each
+face once, held the way the small guide cube shows (the four sides with white
+on top, then white with blue on top, then yellow with green on top — exactly
+the order the cube model numbers its stickers). The nine stickers are previewed
+live, and the face is captured by itself once the cube is held still for a
+moment. After the sixth face, each face's **centre sticker becomes the
+reference for that colour** — measured on your cube, in your light — and every
+sticker is matched to a centre with exposure removed (each face is lit
+differently) under the rule every real cube obeys: each colour exactly nine
+times. Solving that as an assignment problem is what settles red vs orange and
+white vs yellow. If the result is still not a possible cube, the cheapest swap
+of two doubtful stickers that makes it possible is applied, and doubtful
+stickers are outlined on the review screen. `tests/scan.test.mjs` plays a video
+of a real scrambled cube through a fake camera and requires an exact read and a
+working solution; `tests/scan-classify.test.mjs` covers warm, cool, dim and
+uneven light.
 
 **Accessibility.** Full keyboard navigation, ARIA labels on every sticker and
 control, visible focus rings, `prefers-reduced-motion` support (turns complete
 instantly, the idle spin and solved animations stop), optional letters on
-stickers for colour-blind users, and a light/dark toggle that stays monochrome (it starts from the system
+stickers for colour-blind users, a button to stop the cubes spinning, and a light/dark toggle that stays monochrome (it starts from the system
 setting and remembers your choice). On the solve screen, Space plays/pauses
 and the arrow keys step through the moves.
 `tests/layout.test.mjs` audits contrast (WCAG AA), tap-target size, text size and
@@ -202,11 +210,12 @@ move notation uses a monospace face.
 
 ## Known limitations
 
-- **Scanning accuracy depends on lighting.** Camera scanning is the least
+- **Scanning accuracy still depends on lighting.** Camera scanning is the least
   reliable part. In good, even, white light it is usually right first time; under
-  coloured or very dim light it can misread stickers — most often red/orange or
-  blue/green. That is why every face shows a preview you can tap to correct
-  before confirming, and why the review screen re-validates. Glossy stickers that
+  coloured or very dim light it can misread stickers — most often red/orange.
+  That is why every face shows a live preview, any face can be tapped to scan it
+  again, doubtful stickers are outlined on the review screen, and the review
+  screen re-validates. Glossy stickers that
   catch a highlight are the hardest case; tilting the cube a few degrees usually
   fixes it. Manual entry is always available and is exact.
 - **The shortest solver is not guaranteed optimal.** It finds short solutions

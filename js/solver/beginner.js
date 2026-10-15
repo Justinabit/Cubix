@@ -204,7 +204,7 @@ function stageWhiteCross(state, emit) {
     if (!asPetal(state)) {
       const moves = search(state, asPetal, { maxDepth: 6 });
       if (!moves) return null;
-      emit(moves, `Float the white–${colorName(sideColor)} edge to the top`);
+      emit(moves, `Bring the white–${colorName(sideColor)} edge down to the yellow side`);
       state = applyMoveSequence(state, moves);
     }
 
@@ -219,7 +219,7 @@ function stageWhiteCross(state, emit) {
         if (at(candidate, petalSide.face, petalSide.row, petalSide.col) !== sideColor) continue;
         if (center(candidate, petalSide.face) !== sideColor) continue;
         const moves = setup ? [setup, petalSide.face + '2'] : [petalSide.face + '2'];
-        emit(moves, `Drop the white–${colorName(sideColor)} edge into place`);
+        emit(moves, `Swing the white–${colorName(sideColor)} edge up into the white cross`);
         state = applyMoveSequence(state, moves);
         flipped = true;
         break;
@@ -359,7 +359,7 @@ function stageYellowCross(state, emit) {
     goal: (s) => f2lOk(s) && uEdgesOriented(s),
   });
   if (!result) return null;
-  for (const moves of result.steps) emit(moves, 'Flip another top edge to yellow');
+  for (const moves of result.steps) emit(moves, 'Flip another bottom edge so yellow faces down');
   return result.state;
 }
 
@@ -371,7 +371,7 @@ function stagePositionEdges(state, emit) {
     goal: (s) => f2lOk(s) && uEdgesOriented(s) && slotsOk(s, U_EDGE_SLOTS),
   });
   if (!result) return null;
-  for (const moves of result.steps) emit(moves, 'Cycle the top edges into place');
+  for (const moves of result.steps) emit(moves, 'Cycle the bottom edges into place');
   return result.state;
 }
 
@@ -403,7 +403,7 @@ function stageOrientCorners(state, emit) {
     }),
   });
   if (!result) return null;
-  for (const moves of result.steps) emit(moves, 'Twist the last corners so yellow faces up');
+  for (const moves of result.steps) emit(moves, 'Twist the last corners so yellow faces down');
   return result.state;
 }
 
@@ -415,13 +415,16 @@ const COLOR_NAMES = { U: 'white', R: 'red', F: 'green', D: 'yellow', L: 'orange'
 const colorName = (letter) => COLOR_NAMES[letter] || letter;
 
 export const STAGES = [
-  { id: 'white-cross', title: 'White cross', goal: 'Build a white cross on the bottom, with each edge also matching its side colour.' },
+  // Worded for the way the cube is held throughout: white on top, green
+  // facing you, so yellow is underneath. (The solver itself works upside
+  // down, but every move is renamed back into this frame before it is shown.)
+  { id: 'white-cross', title: 'White cross', goal: 'Build a white cross on top, with each edge also matching its side colour.' },
   { id: 'white-corners', title: 'White corners', goal: 'Put the four white corners in, completing the whole white face.' },
-  { id: 'middle-layer', title: 'Middle layer', goal: 'Slide the four middle-layer edges home, finishing the bottom two layers.' },
-  { id: 'yellow-cross', title: 'Yellow cross', goal: 'Flip the top edges so they form a yellow cross (corners do not matter yet).' },
-  { id: 'yellow-edges', title: 'Yellow edges', goal: 'Move the yellow edges so each one sits above its matching side colour.' },
-  { id: 'yellow-corners-position', title: 'Position corners', goal: 'Move the four corners to their correct corners of the cube, ignoring their twist for now.' },
-  { id: 'yellow-corners-orient', title: 'Orient corners', goal: 'Twist the corners in place so the yellow face is complete.' },
+  { id: 'middle-layer', title: 'Middle layer', goal: 'Slide the four middle-layer edges home, finishing the top two layers.' },
+  { id: 'yellow-cross', title: 'Yellow cross', goal: 'Flip the bottom edges so they form a yellow cross underneath (corners do not matter yet).' },
+  { id: 'yellow-edges', title: 'Yellow edges', goal: 'Move the yellow edges so each one sits below its matching side colour.' },
+  { id: 'yellow-corners-position', title: 'Position corners', goal: 'Move the four bottom corners to their correct places, ignoring their twist for now.' },
+  { id: 'yellow-corners-orient', title: 'Orient corners', goal: 'Twist the bottom corners in place so the yellow face is complete.' },
 ];
 
 /**
@@ -458,15 +461,17 @@ export function solveBeginner(facelets) {
     state = next;
   }
 
-  // Translate every move back into the frame the user is holding.
+  // Translate every move back into the frame the user is holding. Each step
+  // is tidied on its own (never across steps), so the flat move list is
+  // exactly the steps laid end to end: move N on screen is move N played.
   const all = [];
   for (const stage of stages) {
-    for (const entry of stage.moves) {
-      entry.moves = renameMoves(entry.moves);
-      all.push(...entry.moves);
-    }
+    stage.moves = stage.moves
+      .map((entry) => ({ ...entry, moves: simplify(renameMoves(entry.moves)) }))
+      .filter((entry) => entry.moves.length > 0);
+    for (const entry of stage.moves) all.push(...entry.moves);
   }
-  return { stages, moves: simplify(all), failedAt, residual: state };
+  return { stages, moves: all, failedAt, residual: state };
 }
 
 /** Drop X X' pairs and fold X X into X2 across a move list. */
