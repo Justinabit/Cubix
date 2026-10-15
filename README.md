@@ -25,8 +25,12 @@ are used directly, so it must be served over `http://` rather than opened as a
 ```bash
 npm test                      # everything: unit + integration
 node tests/run.mjs            # same thing, explicitly
+node tests/run.mjs solver     # only files matching a word
 node tests/model.test.mjs     # or one file at a time
 ```
+
+Each file runs in its own child process, so a failure in one cannot stop the
+rest of the run, and a skipped suite is reported separately from a passing one.
 
 Some tests drive a real headless Chrome and need `puppeteer`; if it is not
 installed they skip themselves rather than fail:
