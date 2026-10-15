@@ -42,6 +42,16 @@ node tests/layout.test.mjs    # UI audit across 5 viewports and both themes
 node tests/scan.test.mjs      # camera flow with a fake capture device
 ```
 
+### Deploying
+
+Upload the folder as-is to any static host (GitHub Pages, Netlify, Vercel,
+Cloudflare Pages, an S3 bucket, …). All paths are relative, so it also works
+from a sub-folder such as `https://you.github.io/cubix/`. Leave out
+`node_modules/`, `tests/` and `tools/` if you like — the app only needs
+`index.html`, `manifest.webmanifest`, `css/`, `js/`, `icons/` and `vendor/`.
+
+Serve it over **HTTPS**: browsers only allow the camera on secure origins.
+
 ---
 
 ## What it does
@@ -91,6 +101,8 @@ tests/                  one file per module, plus browser-level tests
 tools/
   serve.mjs             zero-dependency static server
   ll-lab.mjs            the lab that discovered the beginner-method algorithms
+icons/                  app icons (SVG + PNG) used by the manifest and iOS
+manifest.webmanifest    lets phones add Cubix to the home screen
 vendor/                 Three.js r186.1 (pinned, vendored) + OrbitControls
 ```
 
@@ -167,9 +179,19 @@ under simulated warm, cool, dim and bright lighting.
 **Accessibility.** Full keyboard navigation, ARIA labels on every sticker and
 control, visible focus rings, `prefers-reduced-motion` support (turns complete
 instantly, the idle spin and solved animations stop), optional letters on
-stickers for colour-blind users, and a light/dark toggle that stays monochrome.
+stickers for colour-blind users, and a light/dark toggle that stays monochrome (it starts from the system
+setting and remembers your choice). On the solve screen, Space plays/pauses
+and the arrow keys step through the moves.
 `tests/layout.test.mjs` audits contrast (WCAG AA), tap-target size, text size and
 horizontal overflow across five viewports in both themes.
+
+**Mobile first.** The stylesheet is written for phones first and layered up
+with `min-width` queries (720px for tablets, 1040px for two-column desktop).
+On a phone the net editor becomes a row of live face thumbnails plus one large
+3×3 face to paint, the main action stays pinned to the bottom of the screen,
+the cheat sheet is a bottom sheet, and every cube view is capped in height so
+there is always page left to scroll with. Safe-area insets are respected on
+notched phones.
 
 **Theme.** Strictly black, white and greys — the only colours anywhere on the
 page are the cube's stickers and the six palette swatches. The 3D cube sits on a
@@ -207,6 +229,8 @@ move notation uses a monospace face.
 
 - [Three.js](https://threejs.org) **r186.1** (MIT), vendored in `vendor/` so the
   app works offline with no CDN. Versions are pinned, not floated.
+  `three.core.js` is the upstream `build/three.core.js` minified with Terser
+  (1.4 MB → 0.4 MB) to keep the download small on phones.
 - `OrbitControls` from the same Three.js release.
 - cubejs 1.3.2 is **not** a dependency; it was used during development only, to
   capture reference facelet strings for `tests/reference.test.mjs`.

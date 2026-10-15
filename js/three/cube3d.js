@@ -9,9 +9,10 @@
  *    is updated the instant a turn begins, so the two can never drift.
  *
  *  - Each of the 26 cubies is a rounded box with six sticker planes. Turns are
- *    done by re-parenting the nine moving cubies into a temporary pivot object,
- *    rotating the pivot, then re-parenting and snapping to exact integer angles.
- *    That avoids cumulative floating point drift over thousands of turns.
+ *    done by re-parenting the nine moving cubies into a temporary pivot object
+ *    and rotating the pivot. When the turn ends every cubie goes back to its
+ *    home slot and the stickers are repainted from the new state, so meshes
+ *    never drift and slot-based painting and picking stay correct.
  *
  *  - Reduced motion is respected: when the user prefers reduced motion, turns
  *    complete instantly and the idle spin is disabled.
@@ -93,8 +94,10 @@ export class Cube3D {
 
     this.root = new THREE.Group();
     this.scene.add(this.root);
+    // The turning layer is parented inside `root`, so a turn rotates about the
+    // cube's own axes even after the idle spin has rotated the whole cube.
     this.pivot = new THREE.Group();
-    this.scene.add(this.pivot);
+    this.root.add(this.pivot);
   }
 
   _buildCube() {
@@ -110,6 +113,7 @@ export class Cube3D {
       const mesh = new THREE.Mesh(bodyGeometry, bodyMaterial);
       mesh.position.set(cubie.pos[0], cubie.pos[1], cubie.pos[2]);
       mesh.userData.slot = cubie.index;
+      mesh.userData.home = mesh.position.clone();
 
       // One sticker mesh per face this cubie can show.
       mesh.userData.stickers = {};
@@ -199,9 +203,17 @@ export class Cube3D {
 
   /* ------------------------------ public API ------------------------------ */
 
-  /** Repaint every sticker from a 54-character state. */
+  /**
+   * Repaint every sticker from a 54-character state. Any turn still animating
+   * is dropped, because the new state supersedes it.
+   */
   setState(facelets) {
+    this._cancelAnimation();
     this.facelets = facelets;
+    this._paint(facelets);
+  }
+
+  _paint(facelets) {
     for (const info of FACELET_INFO) {
       const letter = facelets[info.index];
       const sticker = this.cubies[info.slot].userData.stickers[info.face];
@@ -224,12 +236,19 @@ export class Cube3D {
     const power = parsed.power === undefined ? 1 : parsed.power;
     const instant = !animate || this._reducedMotion();
 
+    if (instant) {
+      let next = this.facelets;
+      for (let i = 0; i < power; i++) next = applyQuarterTurn(next, parsed.face, sign);
+      this.setState(next);
+      return;
+    }
     for (let i = 0; i < power; i++) {
       this.facelets = applyQuarterTurn(this.facelets, parsed.face, sign);
-      if (!instant) this.queue.push({ face: parsed.face, sign, duration: this.turnDuration });
+      // Each queued turn remembers the state it ends in, so the stickers can be
+      // repainted correctly when that turn (not the whole queue) finishes.
+      this.queue.push({ face: parsed.face, sign, duration: this.turnDuration, after: this.facelets });
     }
-    if (instant) this.setState(this.facelets);
-    else if (!this.animating) this._startNext();
+    if (!this.animating) this._startNext();
   }
 
   /** Queue a whole notation string ("R U R'"). */
@@ -272,7 +291,14 @@ export class Cube3D {
 
   /** Show an arrow on one face, used to point at the face being turned. */
   showFaceIndicator(face) {
-    if (this.indicator) { this.root.remove(this.indicator); this.indicator = null; }
+    if (this.indicator) {
+      this.root.remove(this.indicator);
+      this.indicator.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+      });
+      this.indicator = null;
+    }
     if (!face || !AXIS[face]) return;
     const group = new THREE.Group();
     const colour = 0xffffff;
@@ -347,7 +373,7 @@ export class Cube3D {
   /* --------------------------- turn animation --------------------------- */
 
   _reducedMotion() {
-    return this.options.preferReducedMotion ? this.options.preferReducedMotion() : false;
+    return this.options.prefersReducedMotion ? this.options.prefersReducedMotion() : false;
   }
 
   _startNext() {
@@ -372,8 +398,24 @@ export class Cube3D {
     }
     this.pivot.rotation.set(0, 0, 0);
     this.animating = {
-      axis, layer, target, members, start: null, duration: next.duration, from: 0,
+      axis, layer, target, members, start: null, duration: next.duration, after: next.after,
     };
+  }
+
+  /** Put every cubie back in its home slot with no rotation. */
+  _rehome(members) {
+    for (const cubie of members) {
+      this.cubieGroup.attach(cubie);
+      cubie.position.copy(cubie.userData.home);
+      cubie.quaternion.identity();
+    }
+    this.pivot.rotation.set(0, 0, 0);
+  }
+
+  _cancelAnimation() {
+    if (this.animating) this._rehome(this.animating.members);
+    this.animating = null;
+    this.queue.length = 0;
   }
 
   _stepAnimation(now) {
@@ -385,22 +427,14 @@ export class Cube3D {
     this.pivot.setRotationFromAxisAngle(anim.axis, anim.target * eased);
 
     if (t >= 1) {
-      // Snap to the exact angle and hand the cubies back, then round their
-      // transforms so thousands of turns cannot accumulate float error.
-      this.pivot.setRotationFromAxisAngle(anim.axis, anim.target);
-      this.pivot.updateMatrixWorld(true);
-      for (const cubie of anim.members) {
-        this.cubieGroup.attach(cubie);
-        cubie.position.set(
-          Math.round(cubie.position.x),
-          Math.round(cubie.position.y),
-          Math.round(cubie.position.z)
-        );
-        snapQuaternion(cubie.quaternion);
-      }
-      this.pivot.rotation.set(0, 0, 0);
+      // The turn is done. Rather than leaving the cubies where they ended up,
+      // put them all back in their home slots and repaint the stickers from the
+      // state this turn ends in. The picture is identical, but every mesh is
+      // again where setState() and picking expect it, and float error cannot
+      // accumulate over thousands of turns.
+      this._rehome(anim.members);
       this.animating = null;
-      this.setState(this.facelets);
+      this._paint(anim.after);
       this._startNext();
     }
   }
@@ -455,14 +489,6 @@ function orientToNormal(object, normal) {
   const target = new THREE.Vector3(0, 0, 1);
   const q = new THREE.Quaternion().setFromUnitVectors(target, normal.clone().normalize());
   object.quaternion.copy(q);
-}
-
-/** Snap a quaternion to the nearest 90° orientation. */
-function snapQuaternion(q) {
-  const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
-  const snap = (v) => Math.round(v / (Math.PI / 2)) * (Math.PI / 2);
-  e.set(snap(e.x), snap(e.y), snap(e.z));
-  q.setFromEuler(e);
 }
 
 /** A small text label drawn on a sticker, for colour-blind users. */

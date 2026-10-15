@@ -5,9 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="Cubix — scan your Rubik's Cube with the camera or enter the colours by hand, then follow animated 3D instructions to solve it. Everything runs in your browser.">
 <meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0d0d0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Cubix">
+<meta property="og:title" content="Cubix — 3D Rubik's Cube solver">
+<meta property="og:description" content="Scan or tap in your cube's colours, then follow animated 3D steps to solve it. Runs entirely in your browser.">
+<meta property="og:type" content="website">
 <title>Cubix — 3D Rubik's Cube solver</title>
+<script>
+  // Pick the theme before first paint: a saved choice, else the system setting.
+  (function () {
+    var theme = 'dark';
+    try {
+      var saved = localStorage.getItem('cubix-theme');
+      if (saved === 'light' || saved === 'dark') theme = saved;
+      else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) theme = 'light';
+    } catch (e) { /* storage blocked: keep the default */ }
+    document.documentElement.dataset.theme = theme;
+    if (theme === 'light') document.querySelector('meta[name="theme-color"]').setAttribute('content', '#f4f4f6');
+  })();
+</script>
 <link rel="stylesheet" href="css/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111'/><g fill='none' stroke='%23eee' stroke-width='2'><rect x='7' y='7' width='18' height='18' rx='3'/><path d='M7 13h18M7 19h18M13 7v18M19 7v18'/></g></svg>">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to main content</a>
@@ -57,7 +80,7 @@
     </div>
     <div class="landing-cube">
       <div class="cube-stage" id="landing-stage"><canvas id="landing-canvas"></canvas></div>
-      <p class="stage-hint">Drag to spin · scroll to zoom</p>
+      <p class="stage-hint"><span class="only-fine">Drag to spin · scroll to zoom</span><span class="only-touch">Drag to spin · pinch to zoom</span></p>
     </div>
   </section>
 
@@ -76,12 +99,15 @@
           <div class="grid-overlay" id="grid-overlay" aria-hidden="true"></div>
           <div class="scan-badge" id="scan-badge">Camera off</div>
         </div>
+        <p class="hint scan-hint" id="scan-hint" aria-live="polite">Allow camera access if your browser asks.</p>
         <div class="scan-controls">
-          <button type="button" class="button button-primary" id="btn-capture">Capture</button>
+          <button type="button" class="button button-primary button-capture" id="btn-capture" disabled>
+            <span class="button-icon" aria-hidden="true">◎</span>
+            Capture
+          </button>
           <button type="button" class="button" id="btn-switch-camera">Flip camera</button>
           <button type="button" class="button button-ghost" id="btn-restart-calibration">Redo centres</button>
         </div>
-        <p class="hint" id="scan-hint">Press “Start camera” to begin.</p>
       </div>
 
       <aside class="scan-side">
@@ -120,11 +146,13 @@
             <span>Show letters on stickers</span>
           </label>
         </div>
-        <p class="hint">Tip: you can also click a face on the 3D cube to paint the whole face.</p>
+        <p class="hint">Tip: you can also tap a sticker on the 3D cube to paint it.</p>
       </div>
 
       <div class="manual-editor">
         <div class="palette" role="radiogroup" aria-label="Sticker colour" id="palette"></div>
+
+        <div class="face-tabs" id="face-tabs" role="tablist" aria-label="Choose a face to edit"></div>
 
         <div class="net" id="net" role="application" aria-label="Cube net. Use the colour swatches above, then tap a sticker to paint it."></div>
 
@@ -191,10 +219,12 @@
             </div>
           </div>
           <div class="playback">
+            <button type="button" class="button" id="btn-restart" aria-label="Restart">↺</button>
             <button type="button" class="button" id="btn-prev" aria-label="Previous move">◀◀</button>
             <button type="button" class="button button-primary" id="btn-play" aria-label="Play">▶ Play</button>
             <button type="button" class="button" id="btn-next" aria-label="Next move">▶▶</button>
-            <button type="button" class="button" id="btn-restart" aria-label="Restart">↺</button>
+          </div>
+          <div class="playback-options">
             <label class="speed">
               <span>Speed</span>
               <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1" aria-label="Playback speed">
@@ -230,7 +260,7 @@
       <p class="done-count"><strong id="done-moves">0</strong> moves</p>
       <p class="done-note" id="done-note"></p>
       <div class="done-actions">
-        <button type="button" class="button button-primary" data-goto="manual">Solve another cube</button>
+        <button type="button" class="button button-primary" id="btn-done-another">Solve another cube</button>
         <button type="button" class="button" id="btn-done-replay">Watch it again</button>
       </div>
     </div>

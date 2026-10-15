@@ -7,7 +7,7 @@
  * disagree about what the cube looks like.
  */
 import {
-  SOLVED_FACELETS, FACE_NAMES, COLOR_OF_LETTER, LETTERS, tokenizeMoves,
+  SOLVED_FACELETS, FACE_NAMES, COLOR_OF_LETTER, tokenizeMoves,
   applyMove, applyMoveSequence, isSolved, randomScramble,
 } from '../core/cube-model.js';
 import { validate, summary } from '../core/validator.js';
@@ -41,6 +41,7 @@ export class App {
     this.views = {};            // name -> Cube3D
     this.scanner = new Scanner();
     this.solverReady = false;
+    this._cameraToken = 0;      // bumped on every camera start, to drop stale ones
 
     this._cacheDom();
     this._buildScreens();
@@ -48,6 +49,7 @@ export class App {
     this._buildPlayer();
     this._buildHelp();
     this._bindGlobal();
+    this._syncThemeButton();
 
     this.go('landing');
     this._loop();
@@ -67,6 +69,7 @@ export class App {
 
       palette: document.getElementById('palette'),
       net: document.getElementById('net'),
+      faceTabs: document.getElementById('face-tabs'),
       counts: document.getElementById('counts'),
       letters: document.getElementById('chk-letters'),
 
@@ -96,6 +99,7 @@ export class App {
       miniCaption: document.getElementById('mini-caption'),
       faceProgress: document.getElementById('face-progress'),
       capture: document.getElementById('btn-capture'),
+      switchCamera: document.getElementById('btn-switch-camera'),
       solvedCount: document.getElementById('done-moves'),
       doneNote: document.getElementById('done-note'),
     };
@@ -141,7 +145,8 @@ export class App {
       view.applyMoves(scramble);
       const wait = scramble.length * 300 + 1600;
       setTimeout(() => {
-        if (this.current !== 'landing') { setTimeout(run, 1500); return; }
+        // Always undo the scramble, even if the user has moved on, so the hero
+        // cube is solved again whenever they come back to it.
         view.applyMoves(scramble.slice().reverse().map(invertOne));
         setTimeout(run, 1400);
       }, wait);
@@ -152,8 +157,10 @@ export class App {
 
   _buildNet() {
     this.net = new NetEditor(this.el.net, this.el.palette, this.el.counts, {
+      tabsContainer: this.el.faceTabs,
       onChange: (state) => {
         this.facelets = state;
+        this.solution = null;          // any edit makes an old solution stale
         for (const name of ['manual', 'review', 'scan']) {
           if (this.views[name]) this.views[name].setState(state);
         }
@@ -163,17 +170,23 @@ export class App {
 
   _buildPlayer() {
     this.player = new Player({
-      onApplyMove: (move) => {
+      onApplyMove: (move, direction) => {
         // The app's facelet string stays the single source of truth; the 3D view
         // mirrors it and animates. Both apply the same verified move, so they
         // cannot drift apart.
         this.facelets = applyMove(this.facelets, move);
         const view = this.views.solve;
-        if (view) view.applyMove(move, { animate: this.animatePlayback });
+        if (!view) return;
+        // Tapping Next faster than the cube can turn should not build up a
+        // backlog of animations: finish the pending turns at once, then animate
+        // only the newest one.
+        if (view.busy && this.animatePlayback && direction) view.setState(view.facelets);
+        view.applyMove(move, { animate: this.animatePlayback && !!direction });
       },
       waitForCube: () => !!(this.views.solve && this.views.solve.busy),
       onIndexChange: (index, info) => this._renderPlayback(index, info),
-      onFinish: () => this._finish(),
+      // Reaching the end is handled in _renderPlayback, whichever way it happens.
+      onFinish: () => {},
     });
   }
 
@@ -198,15 +211,13 @@ export class App {
       const goto = event.target.closest('[data-goto]');
       if (goto) { this.go(goto.dataset.goto); return; }
       const close = event.target.closest('[data-close-sheet]');
-      if (close) { this.el.helpSheet.hidden = true; return; }
-      if (event.target === this.el.helpSheet) this.el.helpSheet.hidden = true;
+      if (close) { this._closeHelp(); return; }
+      if (event.target === this.el.helpSheet) this._closeHelp();
     });
 
-    this.el.help.addEventListener('click', () => { this.el.helpSheet.hidden = false; });
+    this.el.help.addEventListener('click', () => this._openHelp());
     this.el.theme.addEventListener('click', () => this._toggleTheme());
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') this.el.helpSheet.hidden = true;
-    });
+    document.addEventListener('keydown', (event) => this._onKey(event));
 
     // ---- manual screen ----
     this.el.letters.addEventListener('change', () => {
@@ -217,13 +228,10 @@ export class App {
     document.getElementById('btn-undo').addEventListener('click', () => this.net.undo());
     document.getElementById('btn-redo').addEventListener('click', () => this.net.redo());
     document.getElementById('btn-fill-face').addEventListener('click', () => {
-      // Fill whichever face the net editor last touched, defaulting to Up.
-      this.net.fillFace(this.lastNetFace || 'U');
-      this._toast(`Filled the ${FACE_LABELS[this.lastNetFace || 'U'].toLowerCase()} face with ${COLOR_OF_LETTER[this.net.selected].name}`);
-    });
-    this.el.net.addEventListener('click', (event) => {
-      const sticker = event.target.closest('.sticker');
-      if (sticker) this.lastNetFace = sticker.dataset.face;
+      // Fill the face being edited: the last one touched, or the selected tab.
+      const face = this.net.activeFace;
+      this.net.fillFace(face);
+      this._toast(`Filled the ${FACE_LABELS[face].toLowerCase()} face with ${COLOR_OF_LETTER[this.net.selected].name.toLowerCase()}.`);
     });
     document.getElementById('btn-random').addEventListener('click', () => {
       this.net.scramble(24);
@@ -245,10 +253,19 @@ export class App {
       this.go('solve');
       this.player.restart();
     });
+    document.getElementById('btn-done-another').addEventListener('click', () => {
+      // Leave the solve flow first (which restores the entered cube), then
+      // start the new cube from solved; Undo still brings the old one back.
+      this.go('manual');
+      this.net.reset();
+    });
 
     // ---- method switch ----
     for (const chip of document.querySelectorAll('[data-method]')) {
       chip.addEventListener('click', () => {
+        // Ignore a switch while a solve is still being computed, so the chip
+        // shown as selected always matches the solution on screen.
+        if (this._solving || chip.dataset.method === this.method) return;
         this.method = chip.dataset.method;
         for (const other of document.querySelectorAll('[data-method]')) {
           const active = other === chip;
@@ -285,14 +302,26 @@ export class App {
 
     // ---- scan screen ----
     this.el.capture.addEventListener('click', () => this._capture());
-    document.getElementById('btn-switch-camera').addEventListener('click', async () => {
+    this.el.switchCamera.addEventListener('click', async () => {
+      const token = ++this._cameraToken;
+      this.el.capture.disabled = true;
+      this.el.switchCamera.disabled = true;
+      this.el.scanBadge.textContent = 'Switching camera…';
       try {
         const video = await this.scanner.switchCamera();
+        if (token !== this._cameraToken || this.current !== 'scan') { this._stopCamera(); return; }
         this._attachVideo(video);
-      } catch (err) { this._toast(err.message); }
+        this._updateScanStep();
+      } catch (err) {
+        this.el.scanBadge.textContent = 'Camera unavailable';
+        this._toast(err.message);
+      } finally {
+        this.el.switchCamera.disabled = false;
+      }
     });
     document.getElementById('btn-restart-calibration').addEventListener('click', () => {
       this.scanner.calibration = {};
+      this.scanner.classifier = null;
       this.scanned = {};
       this._beginCalibration();
     });
@@ -306,6 +335,17 @@ export class App {
 
   go(name) {
     if (!SCREENS.includes(name)) return;
+    const previous = this.current;
+    if ((previous === 'solve' || previous === 'done') && name !== 'solve' && name !== 'done') {
+      // Playing the solution changes the cube shown on the solve screen, but
+      // the cube the user entered must not change: going back should show it
+      // exactly as they left it.
+      this._cancelFinish();
+      this.player.pause();
+      if (this.solveStart) this.facelets = this.solveStart;
+      this.solution = null;
+      this.player.load([], null);
+    }
     this.current = name;
     for (const [key, section] of Object.entries(this.el.screens)) {
       const active = key === name;
@@ -325,7 +365,13 @@ export class App {
     }
     if (name === 'done') this.view('done').setState(SOLVED_FACELETS);
     this.view(name);
-    window.scrollTo({ top: 0, behavior: this.reducedMotion ? 'auto' : 'smooth' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    // Move keyboard / screen-reader focus to the new screen's heading.
+    const heading = this.el.screens[name].querySelector('h1, h2');
+    if (heading && previous && previous !== name) {
+      heading.setAttribute('tabindex', '-1');
+      heading.focus({ preventScroll: true });
+    }
   }
 
   /* --------------------------------- manual --------------------------------- */
@@ -362,16 +408,30 @@ export class App {
     }
 
     const complete = this.validation.complete;
-    document.getElementById('btn-solve').disabled = !this.validation.valid;
-    this.el.solveHint.textContent = complete
-      ? (this.validation.valid ? '' : 'Fix the highlighted stickers to continue.')
-      : `Fill in the remaining ${this.validation.missing} sticker${this.validation.missing === 1 ? '' : 's'} on the previous screen.`;
+    const solved = isSolved(this.facelets);
+    document.getElementById('btn-solve').disabled = !this.validation.valid || solved;
+    this.el.solveHint.textContent = !complete
+      ? `Fill in the remaining ${this.validation.missing} sticker${this.validation.missing === 1 ? '' : 's'} on the previous screen.`
+      : !this.validation.valid ? 'Fix the highlighted stickers to continue.'
+        : solved ? 'Nothing to solve yet. Edit the colours to match your cube, or try a random scramble.'
+          : '';
   }
 
   /* ---------------------------------- solve ---------------------------------- */
 
   async _solve() {
-    if (!this.validation.valid || this._solving) return;
+    if (this._solving) return;
+    if ((this.current === 'solve' || this.current === 'done') && this.solveStart) {
+      // Re-solving (e.g. after switching method) always starts from the cube
+      // the user entered, not from wherever playback had got to.
+      this._cancelFinish();
+      this.player.stop();
+      this.facelets = this.solveStart;
+    }
+    this.validation = validate(this.facelets);
+    if (!this.validation.valid || isSolved(this.facelets)) return;
+    this.solveStart = this.facelets;
+    this.solution = null;
     this._solving = true;
     try {
       await this._doSolve();
@@ -382,13 +442,19 @@ export class App {
 
   async _doSolve() {
     if (!this.validation.valid) return;
-    this.go('solve');
+    if (this.current !== 'solve') this.go('solve');
     this.animatePlayback = true;
     const view = this.view('solve');
     view.setState(this.facelets);
+    this.player.load([], null);
+    this.el.steps.innerHTML = '';
+    this.el.solveSubtitle.textContent = 'Working out a solution…';
+    // Let the browser paint the screen before the (synchronous) solver runs.
+    await new Promise((resolve) => setTimeout(resolve, 30));
 
+    const method = this.method;
     let solution = null;
-    if (this.method === 'beginner') {
+    if (method === 'beginner') {
       const result = solveBeginner(this.facelets);
       if (result && result.failedAt === -1) {
         solution = { stages: result.stages, moves: result.moves };
@@ -401,6 +467,8 @@ export class App {
       solution = await this._solveWithKociemba();
       if (!solution) return;
     }
+    // The user may have left the solve screen while the tables were building.
+    if (this.current !== 'solve' || this.facelets !== this.solveStart) return;
 
     this.solution = solution;
     this._loadSolution(solution);
@@ -430,7 +498,9 @@ export class App {
 
   _loadSolution(solution) {
     this.finished = false;
-    const moves = simplifyKociemba ? simplifyKociemba(solution.moves) : solution.moves;
+    // Only the short solution is simplified: merging moves in the beginner
+    // method would shift the move indices out of line with its stages.
+    const moves = solution.stages ? solution.moves : simplifyKociemba(solution.moves);
     this.player.load(moves, solution.stages);
     this._renderSteps(solution, moves);
 
@@ -507,9 +577,18 @@ export class App {
       row.classList.toggle('is-current', i === index);
       row.classList.toggle('is-done', i < index);
     }
+    // Keep the current step in view by scrolling the list itself only.
+    // (scrollIntoView would also scroll the page, dragging the cube off screen
+    // on a phone while the user is watching it.)
     const current = this.el.steps.querySelector('.step-row.is-current');
-    if (current && current.scrollIntoView) {
-      current.scrollIntoView({ block: 'nearest', behavior: this.reducedMotion ? 'auto' : 'smooth' });
+    if (current) {
+      const list = this.el.steps;
+      const listRect = list.getBoundingClientRect();
+      const rowRect = current.getBoundingClientRect();
+      let delta = 0;
+      if (rowRect.top < listRect.top) delta = rowRect.top - listRect.top - 8;
+      else if (rowRect.bottom > listRect.bottom) delta = rowRect.bottom - listRect.bottom + 8;
+      if (delta) list.scrollBy({ top: delta, behavior: this.reducedMotion ? 'auto' : 'smooth' });
     }
 
     const play = document.getElementById('btn-play');
@@ -517,18 +596,42 @@ export class App {
     play.setAttribute('aria-label', info.playing ? 'Pause' : 'Play');
 
     // Reaching the end counts whether the user played or stepped there by hand.
+    // The finished screen waits for the last turn to be seen first.
     if (info.total > 0 && info.atEnd && !this.finished) {
       this.finished = true;
-      this.player.pause();
-      this._finish();
-      return;
+      this.player.stop();
+      play.textContent = '▶ Play';
+      play.setAttribute('aria-label', 'Play');
+      this._scheduleFinish();
     }
-    if (!info.atEnd) this.finished = false;
+    if (!info.atEnd) {
+      this.finished = false;
+      this._cancelFinish();
+    }
 
     if (this.views.solve) {
       const view = this.views.solve;
       view.showFaceIndicator(move ? move[0] : null);
     }
+  }
+
+  _scheduleFinish() {
+    this._cancelFinish();
+    const started = performance.now();
+    const poll = () => {
+      const view = this.views.solve;
+      const busy = view && view.busy && performance.now() - started < 8000;
+      this._finishTimer = busy ? setTimeout(poll, 60) : setTimeout(() => {
+        this._finishTimer = null;
+        if (this.current === 'solve' && this.player.atEnd && this.player.length > 0) this._finish();
+      }, this.reducedMotion ? 150 : 650);
+    };
+    poll();
+  }
+
+  _cancelFinish() {
+    clearTimeout(this._finishTimer);
+    this._finishTimer = null;
   }
 
   _finish() {
@@ -546,7 +649,13 @@ export class App {
   /* ---------------------------------- scan ---------------------------------- */
 
   async _enterScan() {
-    this.scanned = this.scanned || {};
+    const token = ++this._cameraToken;
+    this.scanned = {};
+    this.mode = null;
+    this.el.capture.disabled = true;
+    this.el.scanBadge.textContent = 'Starting camera…';
+    this.el.scanHint.textContent = 'Allow camera access if your browser asks.';
+    this.el.grid.classList.add('is-calibrating');
     this.el.faceProgress.innerHTML = '';
     for (const face of SCAN_ORDER) {
       const li = document.createElement('li');
@@ -554,13 +663,22 @@ export class App {
       li.textContent = FACE_LABELS[face];
       this.el.faceProgress.appendChild(li);
     }
+    this._beginCalibration();
+    if (this.views.scan) this.views.scan.setState(SOLVED_FACELETS);
     try {
       const video = await this.scanner.start('environment');
+      // The user may have left the scan screen while the permission prompt
+      // was open; never leave the camera running in the background.
+      if (token !== this._cameraToken || this.current !== 'scan') { this._stopCamera(); return; }
       this._attachVideo(video);
-      this._beginCalibration();
+      this._updateScanStep();
+      this.el.scanHint.textContent = 'Fill the square with the sticker, in even light, then press Capture.';
     } catch (err) {
+      if (token !== this._cameraToken) return;
       this.el.scanBadge.textContent = 'Camera unavailable';
-      this.el.scanHint.textContent = `${err.message} You can enter the colours by hand instead.`;
+      this.el.scanHint.textContent = /by hand/.test(err.message)
+        ? err.message
+        : `${err.message} You can also enter the colours by hand instead.`;
       this.el.capture.disabled = true;
       this._toast(err.message);
     }
@@ -605,9 +723,18 @@ export class App {
   }
 
   async _capture() {
+    if (!this.scanner.ready) {
+      this._toast('The camera is not ready yet.');
+      return;
+    }
     if (this.mode === 'calibrate') {
       const face = SCAN_ORDER[this.calibrationIndex];
-      this.scanner.captureCalibration(face);
+      try {
+        this.scanner.captureCalibration(face);
+      } catch (err) {
+        this._toast(err.message);
+        return;
+      }
       this.calibrationIndex += 1;
       if (this.calibrationIndex < SCAN_ORDER.length) {
         this._updateScanStep();
@@ -623,14 +750,19 @@ export class App {
     }
 
     const face = SCAN_ORDER[this.calibrationIndex];
+    if (!face) return;
     const { results, letters } = this.scanner.scanFace();
     this.scanned[face] = letters;
     this._applyScanned();
 
-    const warnings = results.some((r) => !r || r.confidence < 0.35)
-      ? ['Some stickers were hard to read — check them before continuing.']
-      : [];
-    this.el.scanHint.textContent = warnings[0] || `Captured the ${COLOR_OF_LETTER[face].name} face.`;
+    const warnings = [];
+    if (letters[4] && letters[4] !== face) {
+      warnings.push(`The middle sticker looked ${COLOR_OF_LETTER[letters[4]].name.toLowerCase()}, not ${COLOR_OF_LETTER[face].name.toLowerCase()} — was the right face showing?`);
+    }
+    if (results.some((r) => !r || r.confidence < 0.35)) {
+      warnings.push('Some stickers were hard to read — check them before continuing.');
+    }
+    this.el.scanHint.textContent = warnings[0] || `Captured the ${COLOR_OF_LETTER[face].name.toLowerCase()} face.`;
 
     this.calibrationIndex += 1;
     if (this.calibrationIndex < SCAN_ORDER.length) {
@@ -639,10 +771,10 @@ export class App {
     }
     // All six faces captured.
     this._stopCamera();
-    const gaps = LETTERS.filter((l) => !letters.includes(l));
-    this._toast(gaps.length
-      ? 'Scanning finished — a few stickers need checking.'
-      : 'Scanning finished. Check the result on the next screen.');
+    const ok = validate(this.facelets).valid;
+    this._toast(ok
+      ? 'Scanning finished. Check the result on the next screen.'
+      : 'Scanning finished — a few stickers need checking.');
     this.go('review');
   }
 
@@ -658,14 +790,22 @@ export class App {
       }
     }
     this.facelets = next.join('');
-    this.net.set(this.facelets);
-    for (const name of ['scan', 'manual', 'review']) {
-      if (this.views[name]) this.views[name].setState(this.facelets);
+    this.net.set(this.facelets, { record: true, cause: 'scan' });
+    // The little guide cube shows only what has been scanned so far, on top of
+    // a solved cube, rather than whatever was in the editor before scanning.
+    if (this.views.scan) {
+      const guide = SOLVED_FACELETS.split('');
+      for (const face of Object.keys(this.scanned)) {
+        const base = FACE_NAMES.indexOf(face) * 9;
+        for (let i = 0; i < 9; i++) guide[base + i] = this.facelets[base + i];
+      }
+      this.views.scan.setState(guide.join(''));
     }
   }
 
   _stopCamera() {
     if (this.scanner.stream) this.scanner.stop();
+    if (this.el.video.srcObject) this.el.video.srcObject = null;
   }
 
   /* --------------------------------- helpers --------------------------------- */
@@ -674,8 +814,54 @@ export class App {
     const root = document.documentElement;
     const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
     root.dataset.theme = next;
-    this.el.theme.setAttribute('aria-label', `Switch to ${next === 'dark' ? 'light' : 'dark'} theme`);
-    this.el.themeGlyph.textContent = next === 'dark' ? '◐' : '◑';
+    try { localStorage.setItem('cubix-theme', next); } catch { /* private mode */ }
+    this._syncThemeButton();
+  }
+
+  _syncThemeButton() {
+    const theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+    this.el.theme.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`);
+    this.el.themeGlyph.textContent = theme === 'dark' ? '◐' : '◑';
+    const meta = document.querySelector('meta[name="theme-color"]:not([media])');
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#0d0d0f' : '#f4f4f6');
+  }
+
+  _openHelp() {
+    this._helpReturnFocus = document.activeElement;
+    this.el.helpSheet.hidden = false;
+    document.body.classList.add('has-sheet');
+    const close = this.el.helpSheet.querySelector('[data-close-sheet]');
+    if (close) close.focus();
+  }
+
+  _closeHelp() {
+    if (this.el.helpSheet.hidden) return;
+    this.el.helpSheet.hidden = true;
+    document.body.classList.remove('has-sheet');
+    if (this._helpReturnFocus && this._helpReturnFocus.focus) this._helpReturnFocus.focus();
+  }
+
+  _onKey(event) {
+    if (!this.el.helpSheet.hidden) {
+      if (event.key === 'Escape') this._closeHelp();
+      if (event.key === 'Tab') {
+        // Keep focus inside the open dialog.
+        const focusables = this.el.helpSheet.querySelectorAll('button, [href], [tabindex]:not([tabindex="-1"])');
+        if (focusables.length) {
+          const first = focusables[0], last = focusables[focusables.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      }
+      return;
+    }
+    // Playback shortcuts on the solve screen, unless the user is typing in or
+    // operating another control.
+    if (this.current !== 'solve' || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.target.closest && event.target.closest('input, textarea, select, button')) return;
+    if (event.key === ' ' || event.key === 'k') { event.preventDefault(); document.getElementById('btn-play').click(); }
+    else if (event.key === 'ArrowRight' || event.key === 'l') { event.preventDefault(); this.player.next(); }
+    else if (event.key === 'ArrowLeft' || event.key === 'j') { event.preventDefault(); this.player.previous(); }
   }
 
   _toast(message) {

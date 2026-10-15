@@ -118,6 +118,8 @@ try {
   check('net shows 54 stickers', stickerCount === 54, `saw ${stickerCount}`);
   const swatchCount = await page.$$eval('#palette .swatch', (els) => els.length);
   check('palette shows 6 colours', swatchCount === 6, `saw ${swatchCount}`);
+  check('the selected colour is highlighted from the start',
+    await page.$$eval('#palette .swatch.is-active', (els) => els.length) === 1);
 
   // Paint one sticker and confirm the shared state changed.
   await page.click('#palette .swatch[data-letter="D"]');
@@ -173,12 +175,54 @@ try {
   check('a solution is produced', moveCount > 0, `${moveCount} moves`);
   check('solution is short enough to be useful', moveCount <= 26, `${moveCount} moves`);
 
+  // Regression: after animated turns, every sticker on the 3D cube must still
+  // show the colour the model says is at that position (the renderer used to
+  // repaint moved cubies as if they were still in their home slots).
+  const wrongStickers = await page.evaluate(async () => {
+    const app = window.Cubix;
+    const view = app.views.solve;
+    const { FACELET_INFO, CUBIES, COLOR_OF_LETTER } = await import('./js/core/cube-model.js');
+    const THREE = await import('./vendor/three.js');
+    view.root.rotation.y = 0.8;                       // as if the idle spin had run
+    for (const mv of ['R', "F'", 'U2', 'L', "B'"]) view.applyMove(mv, { animate: true });
+    while (view.busy) await new Promise((r) => setTimeout(r, 40));
+    let bad = 0;
+    for (const cubie of view.cubies) {
+      for (const sticker of Object.values(cubie.userData.stickers)) {
+        const p = new THREE.Vector3(); sticker.getWorldPosition(p); view.root.worldToLocal(p);
+        const c = new THREE.Vector3(); cubie.getWorldPosition(c); view.root.worldToLocal(c);
+        const d = p.clone().sub(c);
+        const axis = ['x', 'y', 'z'].reduce((a, b) => (Math.abs(d[a]) > Math.abs(d[b]) ? a : b));
+        const face = axis === 'x' ? (d.x > 0 ? 'R' : 'L') : axis === 'y' ? (d.y > 0 ? 'U' : 'D') : (d.z > 0 ? 'F' : 'B');
+        const pos = [c.x, c.y, c.z].map(Math.round).join();
+        const info = FACELET_INFO.find((f) => f.face === face && CUBIES[f.slot].pos.join() === pos);
+        if (!info || !sticker.material.color.equals(new THREE.Color(COLOR_OF_LETTER[view.facelets[info.index]].hex))) bad++;
+      }
+    }
+    view.setState(app.facelets);
+    view.root.rotation.y = 0;
+    return bad;
+  });
+  check('the 3D cube shows the right colours after animated turns', wrongStickers === 0, `${wrongStickers} wrong`);
+
+  // Regression: playing part of the solution and going back must not change
+  // the cube the user entered.
+  const entered = await page.evaluate(() => window.Cubix.facelets);
+  await page.evaluate(() => { for (let i = 0; i < 3; i++) document.getElementById('btn-next').click(); });
+  await page.click('#btn-solve-back');
+  await page.waitForFunction('document.getElementById("screen-review").hidden === false', { timeout: 8000 });
+  check('going back from the solution restores the entered cube',
+    await page.evaluate(() => window.Cubix.facelets) === entered);
+  await page.click('#btn-solve');
+  await page.waitForFunction('document.querySelectorAll(".step-row").length > 0', { timeout: 90000 });
+
   // Step all the way through and confirm the app reports a solved cube.
   // Click via JS because the solve screen is hidden the moment the cube is done.
   for (let i = 0; i < moveCount + 2; i++) {
     await page.evaluate(() => document.getElementById('btn-next').click());
   }
-  await new Promise((r) => setTimeout(r, 600));
+  // The finished screen waits for the last turn to play before it appears.
+  await page.waitForFunction('document.getElementById("screen-done").hidden === false', { timeout: 8000 }).catch(() => {});
   const finalState = await page.evaluate(() => window.Cubix.facelets);
   check('following every move leaves a solved cube',
     finalState === 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB', finalState);
@@ -186,7 +230,7 @@ try {
   check('the finished screen appears', doneVisible);
 
   /* ------------------------------ beginner method ------------------------------ */
-  await page.click('#screen-done [data-goto="manual"]');
+  await page.click('#btn-done-another');
   await page.waitForFunction('document.getElementById("screen-manual").hidden === false', { timeout: 8000 });
   await page.click('#btn-random');
   await new Promise((r) => setTimeout(r, 400));
@@ -206,13 +250,13 @@ try {
   for (let i = 0; i < beginnerMoves + 2; i++) {
     await page.evaluate(() => document.getElementById('btn-next').click());
   }
-  await new Promise((r) => setTimeout(r, 600));
+  await page.waitForFunction('document.getElementById("screen-done").hidden === false', { timeout: 8000 }).catch(() => {});
   const beginnerFinal = await page.evaluate(() => window.Cubix.facelets);
   check('beginner method solves the cube too',
     beginnerFinal === 'UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB', beginnerFinal);
 
   /* --------------------------------- validation --------------------------------- */
-  await page.click('#screen-done [data-goto="manual"]');
+  await page.click('#btn-done-another');
   await page.waitForFunction('document.getElementById("screen-manual").hidden === false', { timeout: 8000 });
   // (a) too many of one colour — the simplest way to get the count wrong.
   await page.evaluate(() => {

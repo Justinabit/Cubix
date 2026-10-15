@@ -13,6 +13,14 @@ import {
 const NET_LAYOUT = ['U', 'L', 'F', 'R', 'B', 'D'];   // CSS grid placement order
 const FACE_LABELS = { U: 'Up', L: 'Left', F: 'Front', R: 'Right', B: 'Back', D: 'Down' };
 
+/*
+ * On a phone the whole net does not fit at a tappable size, so the editor also
+ * renders a row of face tabs (each a live 3x3 thumbnail). The CSS shows either
+ * the full net or the tabs plus one large face, depending on the screen width;
+ * the editor itself always tracks an `activeFace`, which is also the face that
+ * "Fill face" fills.
+ */
+
 export class NetEditor {
   /**
    * @param {HTMLElement} container
@@ -20,6 +28,8 @@ export class NetEditor {
    */
   constructor(container, paletteContainer, countsContainer, options = {}) {
     this.container = container;
+    this.tabsContainer = options.tabsContainer || null;
+    this.activeFace = 'F';
     this.paletteContainer = paletteContainer;
     this.countsContainer = countsContainer;
     this.options = options;
@@ -32,7 +42,10 @@ export class NetEditor {
 
     this._buildPalette();
     this._buildNet();
+    this._buildTabs();
     this._buildCounts();
+    this.select(this.selected);
+    this.setActiveFace(this.activeFace);
     this.render();
   }
 
@@ -67,6 +80,11 @@ export class NetEditor {
       faceEl.dataset.face = face;
       faceEl.setAttribute('role', 'group');
       faceEl.setAttribute('aria-label', `${FACE_LABELS[face]} face`);
+      const title = document.createElement('span');
+      title.className = 'net-face-title';
+      title.textContent = `${FACE_LABELS[face]} face`;
+      title.setAttribute('aria-hidden', 'true');
+      faceEl.appendChild(title);
       for (let row = 0; row < 3; row++) {
         for (let col = 0; col < 3; col++) {
           const index = this._index(face, row, col);
@@ -92,6 +110,51 @@ export class NetEditor {
     void NET_LAYOUT;
   }
 
+  _buildTabs() {
+    this.tabButtons = {};
+    this.tabCells = {};
+    if (!this.tabsContainer) return;
+    this.tabsContainer.innerHTML = '';
+    for (const face of FACE_NAMES) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'face-tab';
+      button.dataset.face = face;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-label', `Edit the ${FACE_LABELS[face].toLowerCase()} face`);
+      const mini = document.createElement('span');
+      mini.className = 'face-tab-mini';
+      mini.setAttribute('aria-hidden', 'true');
+      this.tabCells[face] = [];
+      for (let i = 0; i < 9; i++) {
+        const cell = document.createElement('span');
+        mini.appendChild(cell);
+        this.tabCells[face].push(cell);
+      }
+      const label = document.createElement('span');
+      label.className = 'face-tab-label';
+      label.textContent = FACE_LABELS[face];
+      button.append(mini, label);
+      button.addEventListener('click', () => this.setActiveFace(face));
+      this.tabsContainer.appendChild(button);
+      this.tabButtons[face] = button;
+    }
+  }
+
+  /** Choose the face that the phone editor shows and "Fill face" fills. */
+  setActiveFace(face) {
+    if (!FACE_NAMES.includes(face)) return;
+    this.activeFace = face;
+    this.container.dataset.activeFace = face;
+    for (const el of this.container.querySelectorAll('.net-face')) {
+      el.classList.toggle('is-active', el.dataset.face === face);
+    }
+    for (const [key, button] of Object.entries(this.tabButtons)) {
+      const active = key === face;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-selected', String(active));
+    }
+  }
   _buildCounts() {
     this.countsContainer.innerHTML = '';
     this.countElements = {};
@@ -124,6 +187,8 @@ export class NetEditor {
 
   /** Paint one sticker with the selected colour. */
   paint(index) {
+    const face = FACE_NAMES[Math.floor(index / 9)];
+    if (face && face !== this.activeFace) this.setActiveFace(face);
     if (this.state[index] === this.selected) return;
     const next = this.state.split('');
     next[index] = this.selected;
@@ -131,7 +196,7 @@ export class NetEditor {
   }
 
   /** Paint every non-centre sticker of a face with the selected colour. */
-  fillFace(face) {
+  fillFace(face = this.activeFace) {
     const next = this.state.split('');
     for (let row = 0; row < 3; row++) {
       for (let col = 0; col < 3; col++) {
@@ -186,9 +251,7 @@ export class NetEditor {
   /** Outline the stickers the validator is unhappy about. */
   setSuspect(indices) {
     this.suspect = new Set(indices || []);
-    this.stickerButtons.forEach((button, index) => {
-      button.classList.toggle('is-suspect', this.suspect.has(index));
-    });
+    this.render();
   }
 
   setShowLetters(on) {
@@ -213,6 +276,15 @@ export class NetEditor {
       button.setAttribute('aria-label',
         `${FACE_LABELS[face]} face, row ${row + 1}, column ${col + 1}: ${colour ? colour.name : 'empty'}`);
       button.classList.toggle('is-suspect', !isCentre && this.suspect.has(index));
+    }
+
+    for (const [face, cells] of Object.entries(this.tabCells)) {
+      const base = FACE_NAMES.indexOf(face) * 9;
+      cells.forEach((cell, i) => {
+        const colour = COLOR_OF_LETTER[this.state[base + i]];
+        cell.style.background = colour ? colour.hex : '#3a3a3a';
+        cell.classList.toggle('is-suspect', this.suspect.has(base + i));
+      });
     }
 
     const counts = countColors(this.state);

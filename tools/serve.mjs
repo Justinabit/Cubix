@@ -27,6 +27,8 @@ const TYPES = {
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',
   '.map': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  '.webp': 'image/webp',
 };
 
 const server = createServer(async (req, res) => {

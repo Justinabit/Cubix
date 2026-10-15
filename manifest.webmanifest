@@ -1,0 +1,17 @@
+{
+  "name": "Cubix — 3D Rubik's Cube solver",
+  "short_name": "Cubix",
+  "description": "Scan or tap in your cube's colours, then follow animated 3D steps to solve it. Runs entirely in your browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0d0f",
+  "theme_color": "#0d0d0f",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

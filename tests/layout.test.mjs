@@ -117,7 +117,9 @@ const AUDIT = () => {
     }
 
     // interactive targets that are too small to tap
-    const interactive = el.matches('button, a[href], input[type="checkbox"], input[type="range"], [tabindex]');
+    // tabindex="-1" only makes an element focusable from script (the screen
+    // heading gets focus on navigation); it is not something to tap.
+    const interactive = el.matches('button, a[href], input[type="checkbox"], input[type="range"], [tabindex]:not([tabindex="-1"])');
     if (interactive && !el.disabled) {
       // A checkbox is operated through its label, so the label is the target.
       const target = el.type === 'checkbox' && el.closest('label') ? el.closest('label') : el;
@@ -192,6 +194,8 @@ try {
   /* -------------------- light theme gets the same scrutiny -------------------- */
   const page = await browser.newPage();
   await page.setViewport({ width: 1280, height: 800 });
+  // The first theme follows the system setting, so pin it to dark.
+  await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
   await page.goto(BASE, { waitUntil: 'networkidle2' });
   await page.waitForFunction('!!window.Cubix');
   await page.evaluate(() => document.getElementById('btn-theme').click());
