@@ -11,9 +11,10 @@ let puppeteer;
 try {
   puppeteer = (await import('puppeteer')).default;
 } catch {
-  console.log(`${'layout'} test skipped — install puppeteer to run it (npm i -D puppeteer)`);
+  console.log(`${SKIP_MARKER} layout test skipped — install puppeteer to run it (npm i -D puppeteer)`);
   process.exit(0);
 }
+import { SKIP_MARKER } from './skip.mjs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';

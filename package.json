@@ -9,5 +9,8 @@
     "dev": "node tools/serve.mjs",
     "test": "node tests/run.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer": "^24.43.1"
+  }
 }
