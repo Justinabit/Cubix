@@ -9,6 +9,7 @@
     "dev": "node tools/serve.mjs",
     "test": "node tests/run.mjs"
   },
+  "homepage": "https://cubix-flax.vercel.app/",
   "license": "MIT",
   "devDependencies": {
     "puppeteer": "^24.43.1"

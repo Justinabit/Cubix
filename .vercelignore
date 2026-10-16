@@ -1,0 +1,7 @@
+# Only the app itself is deployed; development files stay in the repo.
+tests/
+tools/
+node_modules/
+package-lock.json
+*.log
+.DS_Store

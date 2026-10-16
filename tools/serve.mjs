@@ -9,6 +9,7 @@
  */
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,6 +32,23 @@ const TYPES = {
   '.webp': 'image/webp',
 };
 
+// Send the same headers Vercel will (vercel.json), so the app is developed and
+// tested under the production security policy. Only the `/(.*)` style of
+// source pattern is supported, which is all vercel.json uses.
+const EXTRA_HEADERS = (() => {
+  try {
+    const config = JSON.parse(readFileSync(join(ROOT, 'vercel.json'), 'utf8'));
+    return (config.headers || []).map((rule) => ({
+      pattern: new RegExp('^' + rule.source.replace(/\(\.\*\)/g, '.*') + '$'),
+      headers: Object.fromEntries(rule.headers.map((h) => [h.key.toLowerCase(), h.value])),
+    }));
+  } catch {
+    return [];
+  }
+})();
+const headersFor = (pathname) => Object.assign({},
+  ...EXTRA_HEADERS.filter((rule) => rule.pattern.test(pathname)).map((rule) => rule.headers));
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -52,6 +70,7 @@ const server = createServer(async (req, res) => {
 
     const body = await readFile(target);
     res.writeHead(200, {
+      ...headersFor(url.pathname),
       'content-type': TYPES[extname(target)] || 'application/octet-stream',
       'cache-control': 'no-cache',
     }).end(body);
